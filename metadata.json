@@ -1,0 +1,6 @@
+{
+  "name": "Pro Tournament",
+  "description": "Competitive mobile esports tournament platform with verified PKR wallet deposits, withdrawals, live brackets, and admin operations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
