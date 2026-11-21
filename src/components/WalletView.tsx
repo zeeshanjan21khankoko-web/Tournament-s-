@@ -13,6 +13,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { apiRequest, formatPKR, formatShortDate, readImageFileAsDataUrl } from '../lib/api';
+import { getPreferredPayMethod, setPreferredPayMethod } from '../lib/offlineCache';
 import type {
   DepositRecord,
   PaymentChannel,
@@ -43,7 +44,9 @@ export const WalletView: React.FC<WalletViewProps> = ({
   const [subTab, setSubTab] = useState<'deposit' | 'withdraw' | 'history'>('deposit');
 
   // Deposit state
-  const [depMethod, setDepMethod] = useState<'jazzcash' | 'easypaisa' | 'bank_transfer'>('jazzcash');
+  const [depMethod, setDepMethod] = useState<'jazzcash' | 'easypaisa' | 'bank_transfer'>(() =>
+    getPreferredPayMethod()
+  );
   const [depAmount, setDepAmount] = useState('');
   const [senderAccount, setSenderAccount] = useState('');
   const [transactionRef, setTransactionRef] = useState('');
@@ -202,7 +205,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
               key={t.id}
               type="button"
               onClick={() => setSubTab(t.id)}
-              className={`min-h-[40px] px-4 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+              className={`min-h-[44px] px-4 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
                 subTab === t.id
                   ? 'bg-[#00D4FF] text-[#07080D]'
                   : 'text-slate-300 hover:text-white'
@@ -271,7 +274,10 @@ export const WalletView: React.FC<WalletViewProps> = ({
                   <button
                     key={m.id}
                     type="button"
-                    onClick={() => setDepMethod(m.id)}
+                    onClick={() => {
+                      setDepMethod(m.id);
+                      setPreferredPayMethod(m.id);
+                    }}
                     className={`min-h-[48px] px-2 py-2.5 rounded-xl border text-xs font-semibold flex flex-col items-center justify-center gap-1 transition-colors ${
                       depMethod === m.id
                         ? 'bg-[#00D4FF]/15 border-[#00D4FF] text-white'
@@ -303,7 +309,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
                   <button
                     type="button"
                     onClick={() => handleCopy(activeChannel.accountNumber, activeChannel.id)}
-                    className="min-h-[36px] px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white inline-flex items-center gap-1 shrink-0"
+                    className="min-h-[44px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white inline-flex items-center gap-1 shrink-0"
                   >
                     {copiedId === activeChannel.id ? (
                       <>

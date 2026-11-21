@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Home, Shield, Swords, User, Wallet } from 'lucide-react';
 import { apiRequest, formatPKR } from './lib/api';
+import { loadCachedTournaments, saveCachedTournaments } from './lib/offlineCache';
+import { OfflineIndicator } from './components/PWAInstallBanner';
 import { AuthView } from './components/AuthView';
 import { HomeDashboard } from './components/HomeDashboard';
 import { TournamentsView } from './components/TournamentsView';
@@ -42,10 +44,15 @@ export default function App() {
           token: authToken,
         });
         setTournaments(res.tournaments);
+        saveCachedTournaments(res.tournaments);
         setSelectedTournament((prev) =>
           prev ? res.tournaments.find((t) => t.id === prev.id) || null : null
         );
       } catch (err) {
+        const cached = loadCachedTournaments();
+        if (cached.tournaments.length > 0) {
+          setTournaments(cached.tournaments);
+        }
         console.error('Failed to load tournaments:', err);
       }
     },
@@ -224,6 +231,8 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      <OfflineIndicator />
 
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 pt-6 pb-24 lg:pb-12">

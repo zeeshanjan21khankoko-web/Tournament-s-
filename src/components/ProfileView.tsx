@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Check, Copy, LogOut, Shield, Trophy, Upload, Gamepad2 } from 'lucide-react';
 import { AVATAR_PRESETS, apiRequest, formatPKR, readImageFileAsDataUrl } from '../lib/api';
+import { PWAInstallButton } from './PWAInstallBanner';
 import type { UserProfile } from '../types';
 
 interface ProfileViewProps {
@@ -90,7 +91,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               <button
                 type="button"
                 onClick={handleCopyPlayerId}
-                className="min-h-[34px] px-2.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs text-slate-200 inline-flex items-center gap-1"
+                className="min-h-[44px] sm:min-h-[36px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs text-slate-200 inline-flex items-center gap-1"
               >
                 {copiedId ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                 <span>{copiedId ? 'Copied' : 'Copy'}</span>
@@ -100,6 +101,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          <PWAInstallButton />
           {user.role === 'admin' && onOpenAdmin && (
             <button
               type="button"

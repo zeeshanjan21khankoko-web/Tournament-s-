@@ -9,6 +9,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import { formatMatchTime, formatPKR, formatShortDate } from '../lib/api';
+import { PWAInstallButton } from './PWAInstallBanner';
 import type { Tournament, TransactionRecord, UserProfile } from '../types';
 
 interface HomeDashboardProps {
@@ -184,13 +185,16 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               Instant slot confirmation with verified prize pools
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => onNavigate('tournaments')}
-            className="min-h-[44px] px-4 py-2 rounded-xl border border-white/[0.1] hover:border-[#00D4FF]/50 text-xs sm:text-sm font-medium text-slate-200 whitespace-nowrap shrink-0 transition-colors"
-          >
-            View All ({tournaments.length})
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <PWAInstallButton compact />
+            <button
+              type="button"
+              onClick={() => onNavigate('tournaments')}
+              className="min-h-[44px] px-4 py-2 rounded-xl border border-white/[0.1] hover:border-[#00D4FF]/50 text-xs sm:text-sm font-medium text-slate-200 whitespace-nowrap shrink-0 transition-colors"
+            >
+              View All ({tournaments.length})
+            </button>
+          </div>
         </div>
 
         {showcaseList.length === 0 ? (
@@ -265,7 +269,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                             e.stopPropagation();
                             onSelectTournament(t);
                           }}
-                          className={`min-h-[40px] px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors ${
+                          className={`min-h-[44px] px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors ${
                             t.is_registered
                               ? 'bg-[#8B5CF6]/20 border border-[#8B5CF6]/50 text-white'
                               : 'bg-[#00D4FF] hover:bg-[#33DDFF] text-[#07080D]'

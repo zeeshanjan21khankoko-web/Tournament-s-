@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import { formatMatchTime, formatPKR } from '../lib/api';
+import { getPreferredArenaFilter, setPreferredArenaFilter } from '../lib/offlineCache';
 import type { Tournament, UserProfile } from '../types';
 
 interface TournamentsViewProps {
@@ -29,7 +30,9 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
   onJoinTournament,
   onOpenAuth,
 }) => {
-  const [filter, setFilter] = useState<'all' | 'live' | 'upcoming' | 'completed'>('all');
+  const [filter, setFilter] = useState<'all' | 'live' | 'upcoming' | 'completed'>(() =>
+    getPreferredArenaFilter()
+  );
   const [query, setQuery] = useState('');
   const [inGameName, setInGameName] = useState('');
   const [inGameId, setInGameId] = useState('');
@@ -95,8 +98,11 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
               <button
                 key={tab}
                 type="button"
-                onClick={() => setFilter(tab)}
-                className={`min-h-[38px] px-3.5 py-1.5 rounded-lg text-xs font-semibold capitalize whitespace-nowrap transition-colors ${
+                onClick={() => {
+                  setFilter(tab);
+                  setPreferredArenaFilter(tab);
+                }}
+                className={`min-h-[44px] sm:min-h-[38px] px-3.5 py-1.5 rounded-lg text-xs font-semibold capitalize whitespace-nowrap transition-colors ${
                   filter === tab
                     ? 'bg-[#00D4FF] text-[#07080D]'
                     : 'text-slate-300 hover:text-white'
