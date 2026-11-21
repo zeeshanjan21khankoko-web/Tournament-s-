@@ -73,7 +73,7 @@ export interface DepositRecord {
   player_id?: string;
   email?: string;
   amount: number;
-  method: 'jazzcash' | 'easypaisa' | 'bank_transfer';
+  method: 'jazzcash' | 'easypaisa';
   transaction_ref: string;
   sender_account: string;
   screenshot_data?: string;
@@ -90,10 +90,9 @@ export interface WithdrawalRecord {
   player_id?: string;
   email?: string;
   amount: number;
-  method: 'jazzcash' | 'easypaisa' | 'bank_transfer';
+  method: 'jazzcash' | 'easypaisa';
   account_title: string;
   account_number: string;
-  bank_name: string;
   status: 'pending' | 'approved' | 'rejected';
   admin_note: string;
   created_at: string;
@@ -117,11 +116,11 @@ export interface TransactionRecord {
 }
 
 export interface PaymentChannel {
-  id: 'jazzcash' | 'easypaisa' | 'bank_transfer';
+  id: 'jazzcash' | 'easypaisa';
   name: string;
   accountTitle: string;
   accountNumber: string;
-  bankName: string;
+  providerLabel: string;
   instructions: string[];
 }
 

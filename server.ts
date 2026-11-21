@@ -67,39 +67,26 @@ const PAYMENT_CHANNELS = [
     id: 'jazzcash',
     name: 'JazzCash Mobile Account',
     accountTitle: 'Pro Tournament Esports',
-    accountNumber: '0300-8492104',
-    bankName: 'JazzCash (Mobilink Microfinance)',
+    accountNumber: '03406690336',
+    providerLabel: 'JazzCash (Mobilink Microfinance)',
     instructions: [
       'Open your JazzCash mobile app or dial *786#.',
       'Select Money Transfer -> Send to JazzCash Account.',
-      'Enter account number 0300-8492104 and verify title "Pro Tournament Esports".',
+      'Enter account number 03406690336 and verify the recipient details.',
       'Copy the TID (Transaction ID) from your SMS confirmation and upload the payment screenshot below.',
     ],
   },
   {
     id: 'easypaisa',
-    name: 'EasyPaisa Mobile Wallet',
+    name: 'Easypaisa Mobile Wallet',
     accountTitle: 'Pro Tournament Esports',
-    accountNumber: '0345-9120488',
-    bankName: 'EasyPaisa (Telenor Microfinance)',
+    accountNumber: '03489674834',
+    providerLabel: 'Easypaisa (Telenor Microfinance)',
     instructions: [
-      'Open EasyPaisa App -> Send Money -> EasyPaisa Transfer.',
-      'Transfer exact PKR amount to 0345-9120488.',
+      'Open Easypaisa App -> Send Money -> Easypaisa Transfer.',
+      'Transfer exact PKR amount to 03489674834.',
       'Save the Trx ID (e.g. EP-92837412) and capture a screenshot of the receipt.',
       'Submit the form below for admin verification within 5–15 minutes.',
-    ],
-  },
-  {
-    id: 'bank_transfer',
-    name: 'Bank Transfer (IBFT / Raast)',
-    accountTitle: 'Pro Tournament Esports PK',
-    accountNumber: 'PK42MEZN0002810104829104',
-    bankName: 'Meezan Bank Limited (Raast Enabled)',
-    instructions: [
-      'Use any Pakistani banking app (Meezan, HBL, UBL, Alfalah, SadaPay, NayaPay).',
-      'Send via Raast or IBFT to IBAN PK42MEZN0002810104829104.',
-      'Enter your Player ID in the payment reference/remarks if supported.',
-      'Submit the IBFT Reference ID and receipt screenshot below.',
     ],
   },
 ];
@@ -545,7 +532,7 @@ app.get('/api/wallet', requireAuth, (req: AuthenticatedRequest, res: Response) =
     .all(req.user!.id);
   const withdrawals = db
     .prepare(
-      `SELECT id, amount, method, account_title, account_number, bank_name, status, admin_note, created_at, reviewed_at
+      `SELECT id, amount, method, account_title, account_number, status, admin_note, created_at, reviewed_at
        FROM withdrawals WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`
     )
     .all(req.user!.id);
@@ -579,8 +566,8 @@ app.post('/api/wallet/deposit', requireAuth, (req: AuthenticatedRequest, res: Re
       res.status(400).json({ error: 'Deposit amount must be a whole number between PKR 100 and PKR 500,000.' });
       return;
     }
-    if (!['jazzcash', 'easypaisa', 'bank_transfer'].includes(method)) {
-      res.status(400).json({ error: 'Invalid payment method selected.' });
+    if (!['jazzcash', 'easypaisa'].includes(method)) {
+      res.status(400).json({ error: 'Invalid payment method selected. Choose JazzCash or Easypaisa.' });
       return;
     }
     if (transactionRef.length < 4 || transactionRef.length > 64 || !/^[A-Z0-9_-]+$/.test(transactionRef)) {
@@ -657,26 +644,21 @@ app.post('/api/wallet/withdraw', requireAuth, (req: AuthenticatedRequest, res: R
     const method = typeof req.body.method === 'string' ? req.body.method.trim() : '';
     const accountTitle = typeof req.body.accountTitle === 'string' ? req.body.accountTitle.trim() : '';
     const accountNumber = typeof req.body.accountNumber === 'string' ? req.body.accountNumber.trim() : '';
-    const bankName = typeof req.body.bankName === 'string' ? req.body.bankName.trim() : '';
 
     if (!Number.isInteger(amount) || amount < 200 || amount > 500000) {
       res.status(400).json({ error: 'Withdrawal amount must be a whole number between PKR 200 and PKR 500,000.' });
       return;
     }
-    if (!['jazzcash', 'easypaisa', 'bank_transfer'].includes(method)) {
-      res.status(400).json({ error: 'Invalid payout method selected.' });
+    if (!['jazzcash', 'easypaisa'].includes(method)) {
+      res.status(400).json({ error: 'Invalid payout method selected. Choose JazzCash or Easypaisa.' });
       return;
     }
     if (accountTitle.length < 2 || accountTitle.length > 64) {
       res.status(400).json({ error: 'Account holder title is required.' });
       return;
     }
-    if (accountNumber.length < 6 || accountNumber.length > 40) {
-      res.status(400).json({ error: 'Valid account number or IBAN is required.' });
-      return;
-    }
-    if (method === 'bank_transfer' && bankName.length < 2) {
-      res.status(400).json({ error: 'Bank name is required for bank transfer withdrawals.' });
+    if (accountNumber.length < 6 || accountNumber.length > 20) {
+      res.status(400).json({ error: 'Valid mobile wallet number is required.' });
       return;
     }
 
@@ -701,10 +683,10 @@ app.post('/api/wallet/withdraw', requireAuth, (req: AuthenticatedRequest, res: R
 
       const wInfo = db
         .prepare(
-          `INSERT INTO withdrawals (user_id, amount, method, account_title, account_number, bank_name, status)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending')`
+          `INSERT INTO withdrawals (user_id, amount, method, account_title, account_number, status)
+           VALUES (?, ?, ?, ?, ?, 'pending')`
         )
-        .run(req.user!.id, amount, method, accountTitle, accountNumber, bankName);
+        .run(req.user!.id, amount, method, accountTitle, accountNumber);
 
       const wId = Number(wInfo.lastInsertRowid);
       db.prepare(

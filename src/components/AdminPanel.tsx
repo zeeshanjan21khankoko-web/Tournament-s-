@@ -729,7 +729,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </div>
                     <div className="text-xs text-slate-300">
                       {w.account_title} · <span className="font-mono">{w.account_number}</span>
-                      {w.bank_name ? ` · ${w.bank_name}` : ''}
                     </div>
                   </div>
 

@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import {
   ArrowDownLeft,
   ArrowUpRight,
-  Building2,
   Check,
   CheckCircle2,
   Clock,
@@ -44,7 +43,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
   const [subTab, setSubTab] = useState<'deposit' | 'withdraw' | 'history'>('deposit');
 
   // Deposit state
-  const [depMethod, setDepMethod] = useState<'jazzcash' | 'easypaisa' | 'bank_transfer'>(() =>
+  const [depMethod, setDepMethod] = useState<'jazzcash' | 'easypaisa'>(() =>
     getPreferredPayMethod()
   );
   const [depAmount, setDepAmount] = useState('');
@@ -56,11 +55,10 @@ export const WalletView: React.FC<WalletViewProps> = ({
   const [depSuccess, setDepSuccess] = useState('');
 
   // Withdraw state
-  const [wdMethod, setWdMethod] = useState<'jazzcash' | 'easypaisa' | 'bank_transfer'>('jazzcash');
+  const [wdMethod, setWdMethod] = useState<'jazzcash' | 'easypaisa'>('jazzcash');
   const [wdAmount, setWdAmount] = useState('');
   const [accountTitle, setAccountTitle] = useState('');
   const [accountNumber, setAccountNumber] = useState('');
-  const [bankName, setBankName] = useState('');
   const [wdLoading, setWdLoading] = useState(false);
   const [wdError, setWdError] = useState('');
   const [wdSuccess, setWdSuccess] = useState('');
@@ -140,14 +138,12 @@ export const WalletView: React.FC<WalletViewProps> = ({
           method: wdMethod,
           accountTitle,
           accountNumber,
-          bankName,
         },
       });
       setWdSuccess('Withdrawal request submitted. Funds are reserved pending admin payout.');
       setWdAmount('');
       setAccountTitle('');
       setAccountNumber('');
-      setBankName('');
       await onRefresh();
     } catch (err) {
       setWdError(err instanceof Error ? err.message : 'Withdrawal failed.');
@@ -189,7 +185,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
             Wallet &amp; PKR Payments
           </h1>
           <p className="text-sm text-slate-400">
-            Deposit via JazzCash, EasyPaisa, or Bank Transfer and withdraw winnings securely.
+            Deposit via JazzCash or Easypaisa and withdraw winnings securely.
           </p>
         </div>
 
@@ -261,12 +257,11 @@ export const WalletView: React.FC<WalletViewProps> = ({
               </p>
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-3">
               {(
                 [
                   { id: 'jazzcash', label: 'JazzCash', icon: Smartphone },
-                  { id: 'easypaisa', label: 'EasyPaisa', icon: Smartphone },
-                  { id: 'bank_transfer', label: 'Bank / IBFT', icon: Building2 },
+                  { id: 'easypaisa', label: 'Easypaisa', icon: Smartphone },
                 ] as const
               ).map((m) => {
                 const Icon = m.icon;
@@ -278,7 +273,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
                       setDepMethod(m.id);
                       setPreferredPayMethod(m.id);
                     }}
-                    className={`min-h-[48px] px-2 py-2.5 rounded-xl border text-xs font-semibold flex flex-col items-center justify-center gap-1 transition-colors ${
+                    className={`min-h-[48px] px-3 py-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-colors ${
                       depMethod === m.id
                         ? 'bg-[#00D4FF]/15 border-[#00D4FF] text-white'
                         : 'bg-[#07080D] border-white/[0.08] text-slate-300 hover:border-white/25'
@@ -295,7 +290,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
               <div className="bg-[#07080D] border border-white/[0.08] rounded-xl p-4 space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <div>
-                    <div className="text-xs text-slate-400">{activeChannel.bankName}</div>
+                    <div className="text-xs text-slate-400">{activeChannel.providerLabel}</div>
                     <div className="text-sm font-semibold text-white">
                       {activeChannel.accountTitle}
                     </div>
@@ -466,12 +461,11 @@ export const WalletView: React.FC<WalletViewProps> = ({
             )}
 
             <form onSubmit={submitWithdrawal} className="space-y-4">
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-3">
                 {(
                   [
                     { id: 'jazzcash', label: 'JazzCash' },
-                    { id: 'easypaisa', label: 'EasyPaisa' },
-                    { id: 'bank_transfer', label: 'Bank Transfer' },
+                    { id: 'easypaisa', label: 'Easypaisa' },
                   ] as const
                 ).map((m) => (
                   <button
@@ -529,34 +523,18 @@ export const WalletView: React.FC<WalletViewProps> = ({
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                    {wdMethod === 'bank_transfer' ? 'Account Number / IBAN' : 'Mobile Wallet Number'}
+                    Mobile Wallet Number
                   </label>
                   <input
                     type="text"
                     required
                     value={accountNumber}
                     onChange={(e) => setAccountNumber(e.target.value)}
-                    placeholder={wdMethod === 'bank_transfer' ? 'PK...' : '03XX-XXXXXXX'}
+                    placeholder="03XX-XXXXXXX"
                     className="w-full min-h-[44px] px-3.5 py-2 bg-[#07080D] border border-white/[0.12] rounded-xl font-mono text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#8B5CF6]"
                   />
                 </div>
               </div>
-
-              {wdMethod === 'bank_transfer' && (
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                    Bank Name
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={bankName}
-                    onChange={(e) => setBankName(e.target.value)}
-                    placeholder="e.g. Meezan Bank, HBL, SadaPay, NayaPay"
-                    className="w-full min-h-[44px] px-3.5 py-2 bg-[#07080D] border border-white/[0.12] rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#8B5CF6]"
-                  />
-                </div>
-              )}
 
               <button
                 type="submit"

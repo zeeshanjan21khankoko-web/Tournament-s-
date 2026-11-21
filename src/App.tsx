@@ -304,7 +304,7 @@ export default function App() {
       <footer className="hidden lg:block border-t border-white/[0.06] py-6 text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-6 flex items-center justify-between">
           <span>Pro Tournament Esports Platform</span>
-          <span>Verified PKR Payments · JazzCash · EasyPaisa · Bank Transfer</span>
+          <span>Verified PKR Payments · JazzCash · Easypaisa</span>
         </div>
       </footer>
 

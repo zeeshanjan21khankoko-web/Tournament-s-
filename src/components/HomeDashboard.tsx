@@ -299,7 +299,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               Recent Wallet Activity
             </h2>
             <p className="text-xs sm:text-sm text-slate-400">
-              JazzCash, EasyPaisa, Bank Transfer, and match entry records
+              JazzCash, Easypaisa, and match entry records
             </p>
           </div>
           <button
@@ -326,7 +326,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           </div>
         ) : transactions.length === 0 ? (
           <div className="py-6 border-t border-white/[0.06] text-sm text-slate-400">
-            No transactions yet. Fund your wallet via JazzCash, EasyPaisa, or Bank Transfer to join paid tournaments.
+            No transactions yet. Fund your wallet via JazzCash or Easypaisa to join paid tournaments.
           </div>
         ) : (
           <div className="divide-y divide-white/[0.06]">

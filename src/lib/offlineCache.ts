@@ -56,10 +56,10 @@ export function setPreferredArenaFilter(val: 'all' | 'live' | 'upcoming' | 'comp
   }
 }
 
-export function getPreferredPayMethod(): 'jazzcash' | 'easypaisa' | 'bank_transfer' {
+export function getPreferredPayMethod(): 'jazzcash' | 'easypaisa' {
   try {
     const val = window.localStorage.getItem(PREF_PAY_METHOD_KEY);
-    if (val === 'jazzcash' || val === 'easypaisa' || val === 'bank_transfer') {
+    if (val === 'jazzcash' || val === 'easypaisa') {
       return val;
     }
   } catch {
@@ -68,7 +68,7 @@ export function getPreferredPayMethod(): 'jazzcash' | 'easypaisa' | 'bank_transf
   return 'jazzcash';
 }
 
-export function setPreferredPayMethod(val: 'jazzcash' | 'easypaisa' | 'bank_transfer'): void {
+export function setPreferredPayMethod(val: 'jazzcash' | 'easypaisa'): void {
   try {
     window.localStorage.setItem(PREF_PAY_METHOD_KEY, val);
   } catch {
