@@ -1,0 +1,350 @@
+{
+  "entities": {
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized administrator allowlist document.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "admin_level": {
+          "type": "string",
+          "enum": ["super_admin", "moderator"]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "admin_level", "created_at"]
+    },
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Non-PII public player display profile.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "player_id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32
+        },
+        "avatar_url": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "points": {
+          "type": "integer"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "player_id", "username", "points", "updated_at"]
+    },
+    "UserPrivateProfile": {
+      "title": "UserPrivateProfile",
+      "description": "PII-isolated private user record restricted to owner and admin.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "username": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32
+        },
+        "player_id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["player", "admin"]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "username", "player_id", "role", "created_at", "updated_at"]
+    },
+    "Tournament": {
+      "title": "Tournament",
+      "description": "Public tournament record created and managed exclusively by Admin. Excludes room credentials and player PII.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "game_name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["Battle Royale", "Clash Squad", "Lone Wolf"]
+        },
+        "entry_fee": {
+          "type": "integer"
+        },
+        "prize_pool": {
+          "type": "integer"
+        },
+        "prize_1st": {
+          "type": "integer"
+        },
+        "prize_2nd": {
+          "type": "integer"
+        },
+        "prize_3rd": {
+          "type": "integer"
+        },
+        "prize_4th": {
+          "type": "integer"
+        },
+        "prize_5th": {
+          "type": "integer"
+        },
+        "max_slots": {
+          "type": "integer"
+        },
+        "filled_slots": {
+          "type": "integer"
+        },
+        "match_time": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 64
+        },
+        "end_time": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "enum": ["upcoming", "live", "completed", "cancelled"]
+        },
+        "banner_url": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "rules": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "winners": {
+          "type": "array"
+        },
+        "created_by_uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "game_name",
+        "mode",
+        "entry_fee",
+        "prize_pool",
+        "prize_1st",
+        "prize_2nd",
+        "prize_3rd",
+        "prize_4th",
+        "prize_5th",
+        "max_slots",
+        "filled_slots",
+        "match_time",
+        "end_time",
+        "status",
+        "banner_url",
+        "rules",
+        "winners",
+        "created_by_uid",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    "TournamentRoomSecret": {
+      "title": "TournamentRoomSecret",
+      "description": "Custom room ID and password accessible only to Admin and registered tournament participants.",
+      "type": "object",
+      "properties": {
+        "room_id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "room_pass": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["room_id", "room_pass", "updated_at"]
+    },
+    "TournamentRegistration": {
+      "title": "TournamentRegistration",
+      "description": "Participant slot registration inside a tournament.",
+      "type": "object",
+      "properties": {
+        "user_uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "player_id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 32
+        },
+        "in_game_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "in_game_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "slot_number": {
+          "type": "integer"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["registered", "disqualified"]
+        },
+        "registered_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["user_uid", "player_id", "in_game_name", "in_game_id", "slot_number", "status", "registered_at"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Admin-published tournament announcements and match results.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "category": {
+          "type": "string",
+          "enum": ["Announcement", "Match Result", "Room Alert", "Rules Update"]
+        },
+        "content": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 4000
+        },
+        "is_pinned": {
+          "type": "integer"
+        },
+        "created_by_uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "title", "category", "content", "is_pinned", "created_by_uid", "created_at"]
+    }
+  },
+  "firestore": {
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Admin role allowlist documents."
+    },
+    "/users_public/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public non-PII player profiles."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPrivateProfile" },
+      "description": "Private PII-isolated user profile documents."
+    },
+    "/tournaments/{tournamentId}": {
+      "schema": { "$ref": "#/entities/Tournament" },
+      "description": "Admin-managed tournament listings (public read, admin-only write)."
+    },
+    "/tournaments/{tournamentId}/secrets/{secretId}": {
+      "schema": { "$ref": "#/entities/TournamentRoomSecret" },
+      "description": "Restricted room ID and password accessible only to admin and registered players."
+    },
+    "/tournaments/{tournamentId}/registrations/{userId}": {
+      "schema": { "$ref": "#/entities/TournamentRegistration" },
+      "description": "Registered participants per tournament."
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "Admin-managed announcements."
+    }
+  }
+}

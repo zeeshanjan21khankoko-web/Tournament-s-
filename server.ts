@@ -2223,6 +2223,16 @@ app.post('/api/admin/tournaments', requireAuth, requireAdmin, (req: Authenticate
     const normalizedStart = new Date(startMs).toISOString();
     const normalizedEnd = endTime ? new Date(Date.parse(endTime)).toISOString() : '';
 
+    const duplicate = db
+      .prepare('SELECT id FROM tournaments WHERE lower(trim(title)) = lower(trim(?)) AND match_time = ?')
+      .get(title, normalizedStart);
+    if (duplicate) {
+      res.status(409).json({
+        error: 'A tournament with this exact title and start time already exists.',
+      });
+      return;
+    }
+
     const info = db
       .prepare(
         `INSERT INTO tournaments (

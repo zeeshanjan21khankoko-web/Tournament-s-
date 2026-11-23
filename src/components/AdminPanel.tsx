@@ -4,13 +4,17 @@ import {
   Calendar,
   CheckCircle2,
   Clock,
+  Cloud,
+  CloudOff,
   Edit3,
   ExternalLink,
   Eye,
   Megaphone,
   MessageSquare,
   Plus,
+  RefreshCw,
   ShieldAlert,
+  ShieldCheck,
   Star,
   Trash2,
   Trophy,
@@ -21,6 +25,16 @@ import {
   XCircle,
   Youtube,
 } from 'lucide-react';
+import { onAuthStateChanged } from 'firebase/auth';
+import { ADMIN_FIREBASE_EMAIL, auth } from '../lib/firebase';
+import {
+  deleteTournamentFromFirestore,
+  getFirestoreTournamentCount,
+  isFirebaseAdminUser,
+  signInFirebaseAdmin,
+  signOutFirebaseAdmin,
+  syncTournamentToFirestore,
+} from '../lib/firestoreSync';
 import {
   TOURNAMENT_MODES,
   addHoursToPktParts,
@@ -96,6 +110,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [savingTournament, setSavingTournament] = useState(false);
+  const [firebaseAdminEmail, setFirebaseAdminEmail] = useState<string | null>(() =>
+    isFirebaseAdminUser() ? auth.currentUser?.email || ADMIN_FIREBASE_EMAIL : null
+  );
+  const [firebaseTourCount, setFirebaseTourCount] = useState<number>(0);
+  const [syncingCloud, setSyncingCloud] = useState(false);
+  const [connectingFirebase, setConnectingFirebase] = useState(false);
 
   // YouTube Video composer / editor
   const [editingVideoId, setEditingVideoId] = useState<number | null>(null);
@@ -211,6 +232,79 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   useEffect(() => {
     loadAdminData();
   }, [loadAdminData]);
+
+  // Read-only Firebase Admin Auth listener + Firestore count check (never auto-writes)
+  useEffect(() => {
+    let active = true;
+    const unsub = onAuthStateChanged(auth, (fbUser) => {
+      if (!active) return;
+      if (
+        fbUser &&
+        fbUser.emailVerified &&
+        (fbUser.email || '').toLowerCase() === ADMIN_FIREBASE_EMAIL.toLowerCase()
+      ) {
+        setFirebaseAdminEmail(fbUser.email || ADMIN_FIREBASE_EMAIL);
+      } else {
+        setFirebaseAdminEmail(null);
+      }
+    });
+    getFirestoreTournamentCount()
+      .then((count) => {
+        if (active) setFirebaseTourCount(count);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, []);
+
+  const handleConnectFirebaseAdmin = async () => {
+    if (connectingFirebase) return;
+    setError('');
+    setNotice('');
+    setConnectingFirebase(true);
+    try {
+      const res = await signInFirebaseAdmin();
+      setFirebaseAdminEmail(res.email);
+      const count = await getFirestoreTournamentCount();
+      setFirebaseTourCount(count);
+      setNotice(`Firebase Admin verified (${res.email}). All manual tournament changes now persist to Firebase.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to verify Firebase Admin.');
+    } finally {
+      setConnectingFirebase(false);
+    }
+  };
+
+  const handleDisconnectFirebaseAdmin = async () => {
+    await signOutFirebaseAdmin().catch(() => {});
+    setFirebaseAdminEmail(null);
+    setNotice('Signed out from Firebase Admin cloud session.');
+  };
+
+  const handleManualSyncToFirebase = async () => {
+    if (syncingCloud) return;
+    setError('');
+    setNotice('');
+    if (!isFirebaseAdminUser()) {
+      setError(`Connect Firebase Admin (${ADMIN_FIREBASE_EMAIL}) first to sync tournaments to Firebase.`);
+      return;
+    }
+    setSyncingCloud(true);
+    try {
+      for (const t of tournaments) {
+        await syncTournamentToFirestore(t);
+      }
+      const count = await getFirestoreTournamentCount();
+      setFirebaseTourCount(count);
+      setNotice(`Saved ${tournaments.length} tournament(s) permanently to Firebase Database.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sync tournaments to Firebase.');
+    } finally {
+      setSyncingCloud(false);
+    }
+  };
 
   const resetVideoForm = () => {
     setEditingVideoId(null);
@@ -412,8 +506,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleSaveTournament = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (savingTournament) return;
     setError('');
     setNotice('');
+    setSavingTournament(true);
     try {
       const startIso = pktDateTimeToIso(tDate, tStartTime);
       if (!startIso) {
@@ -460,17 +556,34 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         roomId: tRoomId,
         roomPass: tRoomPass,
       };
+      let savedTournament: Tournament | null = null;
       if (tourModal === 'new') {
-        await apiRequest('/api/admin/tournaments', { method: 'POST', token, body });
+        const res = await apiRequest<{ tournament: Tournament }>('/api/admin/tournaments', {
+          method: 'POST',
+          token,
+          body,
+        });
+        savedTournament = res.tournament;
         setNotice('Tournament created with PKT schedule and Top 5 winner prize tiers.');
       } else if (tourModal) {
-        await apiRequest(`/api/admin/tournaments/${tourModal.id}`, { method: 'PATCH', token, body });
+        const res = await apiRequest<{ tournament: Tournament }>(
+          `/api/admin/tournaments/${tourModal.id}`,
+          { method: 'PATCH', token, body }
+        );
+        savedTournament = res.tournament;
         setNotice('Tournament schedule and Top 5 prizes updated.');
+      }
+      if (savedTournament && isFirebaseAdminUser()) {
+        await syncTournamentToFirestore(savedTournament);
+        const count = await getFirestoreTournamentCount();
+        setFirebaseTourCount(count);
       }
       setTourModal(null);
       await Promise.all([onRefreshPublic(), loadAdminData()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save tournament.');
+    } finally {
+      setSavingTournament(false);
     }
   };
 
@@ -479,6 +592,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setNotice('');
     try {
       await apiRequest(`/api/admin/tournaments/${id}`, { method: 'DELETE', token });
+      if (isFirebaseAdminUser()) {
+        await deleteTournamentFromFirestore(id);
+        const count = await getFirestoreTournamentCount();
+        setFirebaseTourCount(count);
+      }
       setNotice('Tournament removed and any active entry fees refunded.');
       await Promise.all([onRefreshPublic(), loadAdminData()]);
     } catch (err) {
@@ -504,6 +622,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         }
       );
       setRosterModal(res.tournament);
+      if (isFirebaseAdminUser()) {
+        await syncTournamentToFirestore(res.tournament).catch(() => {});
+      }
       setAddPlayerId('');
       setAddPlayerIgn('');
       setNotice('Player added to tournament.');
@@ -521,6 +642,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         { method: 'DELETE', token }
       );
       setRosterModal(res.tournament);
+      if (isFirebaseAdminUser()) {
+        await syncTournamentToFirestore(res.tournament).catch(() => {});
+      }
       setNotice('Player removed and entry fee refunded if applicable.');
       await Promise.all([onRefreshPublic(), loadAdminData()]);
     } catch (err) {
@@ -592,11 +716,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     const isEditingExisting = winnerModal.winners.length > 0;
     try {
-      await apiRequest(`/api/admin/tournaments/${winnerModal.id}/winners`, {
-        method: isEditingExisting ? 'PUT' : 'POST',
-        token,
-        body: { winners: list },
-      });
+      const res = await apiRequest<{ tournament: Tournament }>(
+        `/api/admin/tournaments/${winnerModal.id}/winners`,
+        {
+          method: isEditingExisting ? 'PUT' : 'POST',
+          token,
+          body: { winners: list },
+        }
+      );
+      if (res?.tournament && isFirebaseAdminUser()) {
+        await syncTournamentToFirestore(res.tournament).catch(() => {});
+      }
       setWinnerModal(null);
       setW1User('');
       setW1Prize('');
@@ -1184,6 +1314,71 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <Plus className="w-4 h-4" />
               <span>Create Tournament</span>
             </button>
+          </div>
+
+          {/* Firebase Cloud Security & Manual Sync Bar */}
+          <div className="bg-[#0D1320] border border-[#FACC15]/25 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start sm:items-center gap-3 min-w-0">
+              <div
+                className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                  firebaseAdminEmail
+                    ? 'bg-[#22C55E]/15 border border-[#22C55E]/40 text-[#4ADE80]'
+                    : 'bg-[#FACC15]/15 border border-[#FACC15]/40 text-[#FACC15]'
+                }`}
+              >
+                {firebaseAdminEmail ? (
+                  <ShieldCheck className="w-4 h-4" />
+                ) : (
+                  <CloudOff className="w-4 h-4" />
+                )}
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white flex flex-wrap items-center gap-2">
+                  <span>Firebase Database &amp; Admin Protection</span>
+                  <span className="font-mono text-[11px] text-[#FACC15]">
+                    {firebaseTourCount} Cloud Record{firebaseTourCount === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 truncate">
+                  {firebaseAdminEmail
+                    ? `Admin connected (${firebaseAdminEmail}) · Auto-reset disabled · Manual admin writes only`
+                    : `Connect Google Admin (${ADMIN_FIREBASE_EMAIL}) to back up & lock tournaments in Firebase`}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {firebaseAdminEmail ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={syncingCloud || tournaments.length === 0}
+                    onClick={handleManualSyncToFirebase}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#FACC15]/15 border border-[#FACC15]/45 hover:bg-[#FACC15]/25 text-xs font-bold text-[#FACC15] inline-flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${syncingCloud ? 'animate-spin' : ''}`} />
+                    <span>{syncingCloud ? 'Syncing...' : 'Sync Existing to Firebase'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDisconnectFirebaseAdmin}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#131A29] border border-white/[0.1] hover:border-white/25 text-xs font-medium text-slate-300"
+                  >
+                    Disconnect
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  disabled={connectingFirebase}
+                  onClick={handleConnectFirebaseAdmin}
+                  className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#FACC15] hover:bg-[#FDE047] text-[#0A0E17] text-xs font-extrabold inline-flex items-center gap-1.5 disabled:opacity-60"
+                >
+                  <Cloud className="w-3.5 h-3.5" />
+                  <span>{connectingFirebase ? 'Connecting...' : 'Connect Firebase Admin'}</span>
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="grid gap-4">
@@ -2430,9 +2625,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             <button
               type="submit"
-              className="ff-btn-ember w-full min-h-[46px] rounded-xl font-bold text-sm"
+              disabled={savingTournament}
+              className="ff-btn-ember w-full min-h-[46px] rounded-xl font-bold text-sm disabled:opacity-60"
             >
-              {tourModal === 'new' ? 'Publish Tournament' : 'Save Tournament'}
+              {savingTournament
+                ? tourModal === 'new'
+                  ? 'Publishing Tournament...'
+                  : 'Saving Changes...'
+                : tourModal === 'new'
+                  ? 'Publish Tournament'
+                  : 'Save Tournament'}
             </button>
           </form>
         </div>

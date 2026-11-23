@@ -2,10 +2,34 @@ import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { db } from './db.ts';
 
-const SESSION_SECRET =
-  process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16
-    ? process.env.SESSION_SECRET
-    : crypto.randomBytes(32).toString('hex');
+let cachedSessionSecret: string | null = null;
+function getSessionSecret(): string {
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16) {
+    return process.env.SESSION_SECRET;
+  }
+  if (cachedSessionSecret) return cachedSessionSecret;
+  try {
+    const row = db
+      .prepare("SELECT value FROM app_meta WHERE key = 'jwt_session_secret'")
+      .get() as { value?: string } | undefined;
+    if (row?.value && row.value.length >= 32) {
+      cachedSessionSecret = row.value;
+      return cachedSessionSecret;
+    }
+    const generated = crypto.randomBytes(32).toString('hex');
+    db.prepare("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('jwt_session_secret', ?)").run(
+      generated
+    );
+    const saved = db
+      .prepare("SELECT value FROM app_meta WHERE key = 'jwt_session_secret'")
+      .get() as { value?: string } | undefined;
+    cachedSessionSecret = saved?.value || generated;
+    return cachedSessionSecret;
+  } catch {
+    cachedSessionSecret = crypto.randomBytes(32).toString('hex');
+    return cachedSessionSecret;
+  }
+}
 
 export interface AuthUser {
   id: number;
@@ -161,7 +185,7 @@ export function signToken(userId: number, role: 'player' | 'admin'): string {
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const signature = crypto
-    .createHmac('sha256', SESSION_SECRET)
+    .createHmac('sha256', getSessionSecret())
     .update(encodedPayload)
     .digest('base64url');
   return `${encodedPayload}.${signature}`;
@@ -174,7 +198,7 @@ export function verifyToken(token: string): TokenPayload | null {
   if (!encodedPayload || !signature) return null;
 
   const expectedSig = crypto
-    .createHmac('sha256', SESSION_SECRET)
+    .createHmac('sha256', getSessionSecret())
     .update(encodedPayload)
     .digest('base64url');
 

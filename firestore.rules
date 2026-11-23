@@ -1,0 +1,290 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'zeeshanjan21khankoko@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // --- Entity Validation Blueprints ---
+    function isValidAdminUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'admin_level', 'created_at']) &&
+        data.keys().hasOnly(['uid', 'email', 'admin_level', 'created_at']) &&
+        data.uid is string && isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.admin_level in ['super_admin', 'moderator'] &&
+        data.created_at is timestamp;
+    }
+
+    function isValidUserPublicProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'player_id', 'username', 'points', 'updated_at']) &&
+        data.keys().hasOnly(['uid', 'player_id', 'username', 'avatar_url', 'points', 'updated_at']) &&
+        data.uid is string && data.uid == userId && isValidId(data.uid) &&
+        data.player_id is string && data.player_id.size() >= 3 && data.player_id.size() <= 32 &&
+        data.username is string && data.username.size() >= 2 && data.username.size() <= 32 &&
+        (!('avatar_url' in data) || (data.avatar_url is string && data.avatar_url.size() <= 512)) &&
+        data.points is int && data.points >= 0 &&
+        data.updated_at is timestamp;
+    }
+
+    function isValidUserPrivateProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'username', 'player_id', 'role', 'created_at', 'updated_at']) &&
+        data.keys().hasOnly(['uid', 'email', 'username', 'player_id', 'role', 'created_at', 'updated_at']) &&
+        data.uid is string && data.uid == userId && isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.username is string && data.username.size() >= 2 && data.username.size() <= 32 &&
+        data.player_id is string && data.player_id.size() >= 3 && data.player_id.size() <= 32 &&
+        data.role in ['player', 'admin'] &&
+        data.created_at is timestamp &&
+        data.updated_at is timestamp;
+    }
+
+    function isValidTournament(data) {
+      return data.keys().hasAll([
+          'id', 'title', 'game_name', 'mode', 'entry_fee', 'prize_pool',
+          'prize_1st', 'prize_2nd', 'prize_3rd', 'prize_4th', 'prize_5th',
+          'max_slots', 'filled_slots', 'match_time', 'end_time', 'status',
+          'banner_url', 'rules', 'winners', 'created_by_uid', 'created_at', 'updated_at'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'title', 'game_name', 'mode', 'entry_fee', 'prize_pool',
+          'prize_1st', 'prize_2nd', 'prize_3rd', 'prize_4th', 'prize_5th',
+          'max_slots', 'filled_slots', 'match_time', 'end_time', 'status',
+          'banner_url', 'rules', 'winners', 'created_by_uid', 'created_at', 'updated_at'
+        ]) &&
+        data.id is int && data.id >= 1 &&
+        data.title is string && data.title.size() >= 3 && data.title.size() <= 120 &&
+        data.game_name is string && data.game_name.size() >= 2 && data.game_name.size() <= 64 &&
+        data.mode in ['Battle Royale', 'Clash Squad', 'Lone Wolf'] &&
+        data.entry_fee is int && data.entry_fee >= 0 &&
+        data.prize_pool is int && data.prize_pool >= 0 &&
+        data.prize_1st is int && data.prize_1st >= 0 &&
+        data.prize_2nd is int && data.prize_2nd >= 0 &&
+        data.prize_3rd is int && data.prize_3rd >= 0 &&
+        data.prize_4th is int && data.prize_4th >= 0 &&
+        data.prize_5th is int && data.prize_5th >= 0 &&
+        data.max_slots is int && data.max_slots >= 2 && data.max_slots <= 500 &&
+        data.filled_slots is int && data.filled_slots >= 0 && data.filled_slots <= data.max_slots &&
+        data.match_time is string && data.match_time.size() >= 10 && data.match_time.size() <= 64 &&
+        data.end_time is string && data.end_time.size() <= 64 &&
+        data.status in ['upcoming', 'live', 'completed', 'cancelled'] &&
+        data.banner_url is string && data.banner_url.size() <= 512 &&
+        data.rules is string && data.rules.size() <= 4000 &&
+        data.winners is list && data.winners.size() <= 5 &&
+        (data.winners.size() == 0 || data.winners[0] is map) &&
+        data.created_by_uid is string && isValidId(data.created_by_uid) &&
+        data.created_at is timestamp &&
+        data.updated_at is timestamp;
+    }
+
+    function isValidTournamentSecret(data) {
+      return data.keys().hasAll(['room_id', 'room_pass', 'updated_at']) &&
+        data.keys().hasOnly(['room_id', 'room_pass', 'updated_at']) &&
+        data.room_id is string && data.room_id.size() <= 64 &&
+        data.room_pass is string && data.room_pass.size() <= 64 &&
+        data.updated_at is timestamp;
+    }
+
+    function isValidTournamentRegistration(data, userId) {
+      return data.keys().hasAll(['user_uid', 'player_id', 'in_game_name', 'in_game_id', 'slot_number', 'status', 'registered_at']) &&
+        data.keys().hasOnly(['user_uid', 'player_id', 'in_game_name', 'in_game_id', 'slot_number', 'status', 'registered_at']) &&
+        data.user_uid is string && data.user_uid == userId && isValidId(data.user_uid) &&
+        data.player_id is string && data.player_id.size() >= 3 && data.player_id.size() <= 32 &&
+        data.in_game_name is string && data.in_game_name.size() >= 1 && data.in_game_name.size() <= 64 &&
+        data.in_game_id is string && data.in_game_id.size() >= 1 && data.in_game_id.size() <= 64 &&
+        data.slot_number is int && data.slot_number >= 1 && data.slot_number <= 500 &&
+        data.status in ['registered', 'disqualified'] &&
+        data.registered_at is timestamp;
+    }
+
+    function isValidAnnouncement(data) {
+      return data.keys().hasAll(['id', 'title', 'category', 'content', 'is_pinned', 'created_by_uid', 'created_at']) &&
+        data.keys().hasOnly(['id', 'title', 'category', 'content', 'is_pinned', 'created_by_uid', 'created_at']) &&
+        data.id is int && data.id >= 1 &&
+        data.title is string && data.title.size() >= 3 && data.title.size() <= 160 &&
+        data.category in ['Announcement', 'Match Result', 'Room Alert', 'Rules Update'] &&
+        data.content is string && data.content.size() >= 3 && data.content.size() <= 4000 &&
+        data.is_pinned in [0, 1] &&
+        data.created_by_uid is string && isValidId(data.created_by_uid) &&
+        data.created_at is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // Connection probe document for startup SDK verification
+    match /test/connection {
+      allow get: if true;
+      allow list, write: if false;
+    }
+
+    // Admin allowlist: only bootstrapped admin can write; owner or admin can read
+    match /admins/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isBootstrappedAdmin() && isValidId(userId) && isValidAdminUser(incoming()) &&
+        incoming().uid == userId && incoming().created_at == request.time;
+      allow update: if isBootstrappedAdmin() && isValidId(userId) && isValidAdminUser(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().created_at == existing().created_at &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['admin_level', 'email']);
+      allow delete: if isBootstrappedAdmin() && isValidId(userId) && userId != request.auth.uid;
+    }
+
+    // Public non-PII profiles
+    match /users_public/{userId} {
+      allow get: if isValidId(userId);
+      allow list: if true;
+      allow create: if isVerifiedUser() && isValidId(userId) && isOwner(userId) &&
+        isValidUserPublicProfile(incoming(), userId) && incoming().updated_at == request.time;
+      allow update: if isVerifiedUser() && isValidId(userId) &&
+        isValidUserPublicProfile(incoming(), userId) && (
+          (isOwner(userId) &&
+            incoming().uid == existing().uid &&
+            incoming().player_id == existing().player_id &&
+            incoming().points == existing().points &&
+            incoming().updated_at == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['username', 'avatar_url', 'updated_at'])) ||
+          isAdmin()
+        );
+      allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin();
+    }
+
+    // Private PII-isolated user records
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow create: if isVerifiedUser() && isValidId(userId) && isOwner(userId) &&
+        isValidUserPrivateProfile(incoming(), userId) &&
+        incoming().role == 'player' &&
+        incoming().created_at == request.time &&
+        incoming().updated_at == request.time;
+      allow update: if isVerifiedUser() && isValidId(userId) &&
+        isValidUserPrivateProfile(incoming(), userId) && (
+          (isOwner(userId) &&
+            incoming().uid == existing().uid &&
+            incoming().role == existing().role &&
+            incoming().created_at == existing().created_at &&
+            incoming().updated_at == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['username', 'updated_at'])) ||
+          (isAdmin() &&
+            incoming().uid == existing().uid &&
+            incoming().created_at == existing().created_at &&
+            incoming().updated_at == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['username', 'role', 'updated_at']))
+        );
+      allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin();
+    }
+
+    // Tournaments: Public read catalog (no PII/secrets); STRICTLY Admin-only create/update/delete
+    match /tournaments/{tournamentId} {
+      allow get: if isValidId(tournamentId);
+      allow list: if true;
+      allow create: if isVerifiedUser() && isValidId(tournamentId) &&
+        isValidTournament(incoming()) &&
+        incoming().created_by_uid == request.auth.uid &&
+        incoming().created_at == request.time &&
+        incoming().updated_at == request.time &&
+        isAdmin();
+      allow update: if isVerifiedUser() && isValidId(tournamentId) &&
+        isValidTournament(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().created_by_uid == existing().created_by_uid &&
+        incoming().created_at == existing().created_at &&
+        incoming().updated_at == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'game_name', 'mode', 'entry_fee', 'prize_pool',
+          'prize_1st', 'prize_2nd', 'prize_3rd', 'prize_4th', 'prize_5th',
+          'max_slots', 'filled_slots', 'match_time', 'end_time', 'status',
+          'banner_url', 'rules', 'winners', 'updated_at'
+        ]) &&
+        isAdmin();
+      allow delete: if isVerifiedUser() && isValidId(tournamentId) && isAdmin();
+
+      // Room secrets: only Admin or registered players of the parent tournament
+      match /secrets/{secretId} {
+        allow get: if isSignedIn() && isValidId(tournamentId) && isValidId(secretId) &&
+          exists(/databases/$(database)/documents/tournaments/$(tournamentId)) && (
+            isAdmin() || (
+              isVerifiedUser() &&
+              exists(/databases/$(database)/documents/tournaments/$(tournamentId)/registrations/$(request.auth.uid))
+            )
+          );
+        allow list: if isBootstrappedAdmin();
+        allow create, update: if isVerifiedUser() && isValidId(tournamentId) && isValidId(secretId) &&
+          isValidTournamentSecret(incoming()) &&
+          incoming().updated_at == request.time &&
+          exists(/databases/$(database)/documents/tournaments/$(tournamentId)) &&
+          isAdmin();
+        allow delete: if isVerifiedUser() && isValidId(tournamentId) && isValidId(secretId) && isAdmin();
+      }
+
+      // Participant registrations: Master Gate checks parent tournament exists
+      match /registrations/{userId} {
+        allow get: if isSignedIn() && isValidId(tournamentId) && isValidId(userId) &&
+          exists(/databases/$(database)/documents/tournaments/$(tournamentId)) &&
+          (isOwner(userId) || isAdmin());
+        allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.user_uid == request.auth.uid);
+        allow create, update: if isVerifiedUser() && isValidId(tournamentId) && isValidId(userId) &&
+          isValidTournamentRegistration(incoming(), userId) &&
+          exists(/databases/$(database)/documents/tournaments/$(tournamentId)) &&
+          isAdmin();
+        allow delete: if isVerifiedUser() && isValidId(tournamentId) && isValidId(userId) && isAdmin();
+      }
+    }
+
+    // Announcements: Public read, Admin-only write
+    match /announcements/{announcementId} {
+      allow get: if isValidId(announcementId);
+      allow list: if true;
+      allow create: if isVerifiedUser() && isValidId(announcementId) &&
+        isValidAnnouncement(incoming()) &&
+        incoming().created_by_uid == request.auth.uid &&
+        incoming().created_at == request.time &&
+        isAdmin();
+      allow update: if isVerifiedUser() && isValidId(announcementId) &&
+        isValidAnnouncement(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().created_by_uid == existing().created_by_uid &&
+        incoming().created_at == existing().created_at &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'category', 'content', 'is_pinned']) &&
+        isAdmin();
+      allow delete: if isVerifiedUser() && isValidId(announcementId) && isAdmin();
+    }
+  }
+}

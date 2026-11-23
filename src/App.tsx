@@ -26,6 +26,7 @@ import {
   formatShortDate,
 } from './lib/api';
 import { loadCachedTournaments, saveCachedTournaments } from './lib/offlineCache';
+import { subscribeTournamentsFromFirestore } from './lib/firestoreSync';
 import { DownloadTournamentAppButton, OfflineIndicator } from './components/PWAInstallBanner';
 import { AuthView } from './components/AuthView';
 import { HomeDashboard } from './components/HomeDashboard';
@@ -115,7 +116,9 @@ export default function App() {
   const [luckyRecent, setLuckyRecent] = useState<LuckyDrawEntry[]>([]);
   const [luckyError, setLuckyError] = useState('');
 
-  const [tournaments, setTournaments] = useState<Tournament[]>([]);
+  const [apiTournaments, setApiTournaments] = useState<Tournament[]>([]);
+  const [cloudTournaments, setCloudTournaments] = useState<Tournament[]>([]);
+  const [offlineFallbackTournaments, setOfflineFallbackTournaments] = useState<Tournament[]>([]);
   const [announcements, setAnnouncements] = useState<AnnouncementRecord[]>([]);
   const [videos, setVideos] = useState<YouTubeVideoRecord[]>([]);
   const [topLeaderboard, setTopLeaderboard] = useState<LeaderboardEntry[]>([]);
@@ -216,12 +219,56 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [user]);
 
+  // Deduplicated, permanent tournament list: Firestore persistent store + backend live details
+  // Never auto-creates or resurrects tournaments; keyed strictly by numeric id.
+  const tournaments = useMemo(() => {
+    const byId = new Map<number, Tournament>();
+    for (const ct of cloudTournaments) {
+      if (ct && Number.isFinite(ct.id) && ct.id > 0) {
+        byId.set(ct.id, ct);
+      }
+    }
+    for (const at of apiTournaments) {
+      if (at && Number.isFinite(at.id) && at.id > 0) {
+        const existing = byId.get(at.id);
+        byId.set(at.id, existing ? { ...existing, ...at } : at);
+      }
+    }
+    if (byId.size === 0 && offlineFallbackTournaments.length > 0) {
+      for (const ot of offlineFallbackTournaments) {
+        if (ot && Number.isFinite(ot.id) && ot.id > 0) {
+          byId.set(ot.id, ot);
+        }
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => b.id - a.id);
+  }, [cloudTournaments, apiTournaments, offlineFallbackTournaments]);
+
+  // Read-only Firestore listener: keeps tournament records synced across reloads and deployments
+  useEffect(() => {
+    const unsubscribe = subscribeTournamentsFromFirestore(
+      (list) => {
+        setCloudTournaments((prev) => (sameJson(prev, list) ? prev : list));
+      },
+      (err) => {
+        console.warn('Firestore tournament listener notice:', err.message);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
   const liveTournaments = useMemo(() => {
     return tournaments.map((t) => {
       const computed = computeTournamentStatus(t, nowMs);
       return computed === t.status ? t : { ...t, status: computed };
     });
   }, [tournaments, nowMs]);
+
+  useEffect(() => {
+    if (tournaments.length > 0) {
+      saveCachedTournaments(tournaments);
+    }
+  }, [tournaments]);
 
   const liveSelectedTournament = useMemo(() => {
     if (!selectedTournament) return null;
@@ -247,13 +294,17 @@ export default function App() {
       ]);
 
       let leaderboardDataChanged = false;
+      const nextApiTournaments = Array.isArray(tourRes.tournaments) ? tourRes.tournaments : [];
 
-      setTournaments((prev) => {
-        if (sameJson(prev, tourRes.tournaments)) return prev;
+      setOfflineFallbackTournaments([]);
+      setApiTournaments((prev) => {
+        if (sameJson(prev, nextApiTournaments)) return prev;
         leaderboardDataChanged = true;
-        saveCachedTournaments(tourRes.tournaments);
-        return tourRes.tournaments;
+        return nextApiTournaments;
       });
+      if (nextApiTournaments.length === 0 && cloudTournaments.length === 0) {
+        saveCachedTournaments([]);
+      }
 
       if (annRes) {
         const nextAnn = annRes.announcements || [];
@@ -286,18 +337,18 @@ export default function App() {
 
       setSelectedTournament((prev) => {
         if (!prev) return null;
-        const found = tourRes.tournaments.find((t) => t.id === prev.id);
+        const found = nextApiTournaments.find((t) => t.id === prev.id);
         if (!found) return prev;
         return sameJson(prev, found) ? prev : found;
       });
     } catch (err) {
       const cached = loadCachedTournaments();
       if (cached.tournaments.length > 0) {
-        setTournaments((prev) => (prev.length === 0 ? cached.tournaments : prev));
+        setOfflineFallbackTournaments((prev) => (prev.length === 0 ? cached.tournaments : prev));
       }
       console.error('Failed to load tournaments:', err);
     }
-  }, []);
+  }, [cloudTournaments.length]);
 
   const loadUserAndWallet = useCallback(async (authToken: string | null) => {
     if (!authToken) {
