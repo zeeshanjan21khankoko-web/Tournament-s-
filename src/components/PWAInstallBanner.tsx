@@ -107,7 +107,7 @@ export const PWAInstallButton: React.FC<{ compact?: boolean }> = ({ compact = fa
         <button
           type="button"
           onClick={() => setShowGuide(true)}
-          className={`min-h-[44px] inline-flex items-center justify-center gap-2 rounded-xl border border-[#22C55E]/30 bg-[#091D12] hover:border-[#FACC15]/70 text-emerald-50 font-semibold transition-colors whitespace-nowrap shrink-0 ${
+          className={`min-h-[44px] inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.1] bg-[#131A29] hover:border-[#FACC15]/70 text-slate-100 font-semibold transition-colors whitespace-nowrap shrink-0 ${
             compact ? 'px-3 py-2 text-xs' : 'px-4 py-2.5 text-sm'
           }`}
         >
@@ -122,7 +122,7 @@ export const PWAInstallButton: React.FC<{ compact?: boolean }> = ({ compact = fa
           >
             <div
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-sm rounded-2xl bg-[#091D12] border border-[#22C55E]/35 p-6 space-y-4 shadow-2xl"
+              className="w-full max-w-sm rounded-2xl bg-[#131A29] border border-white/[0.12] p-6 space-y-4 shadow-2xl"
             >
               <div className="flex items-center justify-between">
                 <h3 className="font-display text-lg font-bold text-white">Install FREE FIRE TOURNAMENT 09</h3>
@@ -130,12 +130,12 @@ export const PWAInstallButton: React.FC<{ compact?: boolean }> = ({ compact = fa
                   type="button"
                   onClick={() => setShowGuide(false)}
                   aria-label="Close install guide"
-                  className="min-h-[44px] min-w-[44px] flex items-center justify-center text-emerald-200/75 hover:text-white"
+                  className="min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-400 hover:text-white"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
-              <ol className="space-y-2 text-sm text-emerald-50/85 list-decimal list-inside">
+              <ol className="space-y-2 text-sm text-slate-300 list-decimal list-inside">
                 <li>Tap the <strong>Share</strong> icon in your Safari toolbar.</li>
                 <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
                 <li>Tap <strong>Add</strong> to launch FREE FIRE TOURNAMENT 09 full-screen.</li>

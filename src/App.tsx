@@ -1,15 +1,30 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
+  Bell,
+  CircleUserRound,
   Flame,
+  Gift,
   Home,
+  Medal,
+  Megaphone,
+  Pin,
   Shield,
-  Swords,
+  Sparkles,
   Trophy,
   User,
   Wallet,
+  X,
 } from 'lucide-react';
-import { ApiError, apiRequest, computeTournamentStatus, formatPKR } from './lib/api';
+import {
+  ApiError,
+  AVATAR_PRESETS,
+  apiRequest,
+  computeTournamentStatus,
+  formatPKR,
+  formatRs,
+  formatShortDate,
+} from './lib/api';
 import { loadCachedTournaments, saveCachedTournaments } from './lib/offlineCache';
 import { OfflineIndicator } from './components/PWAInstallBanner';
 import { AuthView } from './components/AuthView';
@@ -44,17 +59,17 @@ function sameJson<T>(a: T, b: T): boolean {
 
 type ActiveTab =
   | 'home'
+  | 'wallet'
   | 'tournaments'
   | 'leaderboard'
-  | 'wallet'
   | 'profile'
   | 'admin';
 
 const TAB_TO_PATH: Record<ActiveTab, string> = {
   home: '/',
+  wallet: '/wallet',
   tournaments: '/tournaments',
   leaderboard: '/leaderboard',
-  wallet: '/wallet',
   profile: '/profile',
   admin: '/admin',
 };
@@ -69,6 +84,14 @@ function pathToTab(pathname: string): ActiveTab {
   return 'home';
 }
 
+interface LuckyDrawEntry {
+  id: number;
+  draw_date_pkt: string;
+  prize_amount: number;
+  prize_label: string;
+  created_at: string;
+}
+
 export default function App() {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -80,6 +103,17 @@ export default function App() {
     return 'home';
   });
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showNotificationsModal, setShowNotificationsModal] = useState(false);
+  const [unreadAckCount, setUnreadAckCount] = useState<number>(0);
+
+  // Lucky Draw state
+  const [showLuckyDrawModal, setShowLuckyDrawModal] = useState(false);
+  const [luckyLoading, setLuckyLoading] = useState(false);
+  const [luckySpinning, setLuckySpinning] = useState(false);
+  const [luckyCanSpin, setLuckyCanSpin] = useState(true);
+  const [luckyTodayEntry, setLuckyTodayEntry] = useState<LuckyDrawEntry | null>(null);
+  const [luckyRecent, setLuckyRecent] = useState<LuckyDrawEntry[]>([]);
+  const [luckyError, setLuckyError] = useState('');
 
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [announcements, setAnnouncements] = useState<AnnouncementRecord[]>([]);
@@ -87,7 +121,9 @@ export default function App() {
   const [topLeaderboard, setTopLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [leaderboardRefreshKey, setLeaderboardRefreshKey] = useState(0);
   const [selectedTournament, setSelectedTournament] = useState<Tournament | null>(null);
-  const [selectedMode, setSelectedMode] = useState<'all' | 'Battle Royale' | 'Clash Squad' | 'Lone Wolf'>('all');
+  const [selectedMode, setSelectedMode] = useState<
+    'all' | 'Battle Royale' | 'Clash Squad' | 'Lone Wolf'
+  >('all');
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   const [wallet, setWallet] = useState<WalletAccount | null>(null);
@@ -95,7 +131,7 @@ export default function App() {
   const [withdrawals, setWithdrawals] = useState<WithdrawalRecord[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
   const [winnings, setWinnings] = useState<WinningRecord[]>([]);
-  const [walletSubTab, setWalletSubTab] = useState<WalletSubTab>('withdraw');
+  const [walletSubTab, setWalletSubTab] = useState<WalletSubTab>('history');
   const [paymentChannels, setPaymentChannels] = useState<PaymentChannel[]>([]);
 
   const lastPublicSyncRef = useRef<number>(0);
@@ -205,7 +241,9 @@ export default function App() {
         apiRequest<{ announcements: AnnouncementRecord[] }>('/api/announcements').catch(() => null),
         apiRequest<{ paymentChannels: PaymentChannel[] }>('/api/payment-channels').catch(() => null),
         apiRequest<{ videos: YouTubeVideoRecord[] }>('/api/videos').catch(() => null),
-        apiRequest<{ leaderboard: LeaderboardEntry[] }>('/api/leaderboard?period=all').catch(() => null),
+        apiRequest<{ leaderboard: LeaderboardEntry[] }>('/api/leaderboard?period=all').catch(
+          () => null
+        ),
       ]);
 
       let leaderboardDataChanged = false;
@@ -299,8 +337,6 @@ export default function App() {
         sameJson(prev, walletRes.paymentChannels) ? prev : walletRes.paymentChannels
       );
     } catch (err) {
-      // Only clear the active session if the server explicitly rejects credentials (401/403).
-      // Transient network errors, offline states, or restarts keep the user signed in.
       if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
         setToken(null);
         setUser(null);
@@ -371,11 +407,14 @@ export default function App() {
     if (tab === 'admin' && user?.role !== 'admin') {
       return;
     }
+    if (tab === 'wallet') {
+      setWalletSubTab('history');
+    }
     setActiveTab(tab);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleOpenWallet = (subTab: WalletSubTab = 'withdraw') => {
+  const handleOpenWallet = (subTab: WalletSubTab = 'history') => {
     if (!user) {
       setShowAuthModal(true);
       return;
@@ -421,50 +460,162 @@ export default function App() {
     await refreshAll();
   };
 
-  const desktopNavItems: Array<{
+  const openLuckyDraw = async () => {
+    if (!token) {
+      setShowAuthModal(true);
+      return;
+    }
+    setLuckyError('');
+    setShowLuckyDrawModal(true);
+    setLuckyLoading(true);
+    try {
+      const res = await apiRequest<{
+        canSpin: boolean;
+        todayEntry: LuckyDrawEntry | null;
+        recentEntries: LuckyDrawEntry[];
+      }>('/api/lucky-draw', { token });
+      setLuckyCanSpin(res.canSpin);
+      setLuckyTodayEntry(res.todayEntry);
+      setLuckyRecent(res.recentEntries || []);
+    } catch (err) {
+      setLuckyError(err instanceof Error ? err.message : 'Unable to load Lucky Draw.');
+    } finally {
+      setLuckyLoading(false);
+    }
+  };
+
+  const handleSpinLuckyDraw = async () => {
+    if (!token || !luckyCanSpin || luckySpinning) return;
+    setLuckyError('');
+    setLuckySpinning(true);
+    try {
+      const [res] = await Promise.all([
+        apiRequest<{ entry: LuckyDrawEntry; user: UserProfile }>('/api/lucky-draw/spin', {
+          method: 'POST',
+          token,
+        }),
+        new Promise((r) => setTimeout(r, 900)),
+      ]);
+      setLuckyCanSpin(false);
+      setLuckyTodayEntry(res.entry);
+      setLuckyRecent((prev) => [res.entry, ...prev].slice(0, 10));
+      setUser(res.user);
+      await refreshAll();
+    } catch (err) {
+      setLuckyError(err instanceof Error ? err.message : 'Unable to spin Lucky Draw.');
+    } finally {
+      setLuckySpinning(false);
+    }
+  };
+
+  const unreadCount = Math.max(0, announcements.length - unreadAckCount);
+
+  // Desktop nav order & Mobile 5-Tab Bottom Bar (Exact match to reference screenshots: Home, Wallet, Tournaments, Leaderboard, Profile)
+  const navItems: Array<{
     id: ActiveTab;
     label: string;
     icon: React.ComponentType<{ className?: string }>;
   }> = [
     { id: 'home', label: 'Home', icon: Home },
-    { id: 'tournaments', label: 'Tournaments', icon: Swords },
-    { id: 'leaderboard', label: 'Leaderboard', icon: Trophy },
     { id: 'wallet', label: 'Wallet', icon: Wallet },
+    { id: 'tournaments', label: 'Tournaments', icon: Trophy },
+    { id: 'leaderboard', label: 'Leaderboard', icon: Medal },
     { id: 'profile', label: 'Profile', icon: User },
   ];
-  if (user?.role === 'admin') {
-    desktopNavItems.push({ id: 'admin', label: 'Admin', icon: Shield });
-  }
 
-  const mobileNavItems: Array<{
-    id: ActiveTab;
-    label: string;
-    icon: React.ComponentType<{ className?: string }>;
-  }> = [
-    { id: 'home', label: 'Home', icon: Home },
-    { id: 'tournaments', label: 'Tournaments', icon: Swords },
-    { id: 'leaderboard', label: 'Leaderboard', icon: Trophy },
-    { id: 'wallet', label: 'Wallet', icon: Wallet },
-  ];
+  const renderMobileHeaderLeft = () => {
+    if (activeTab === 'home') {
+      return (
+        <button
+          type="button"
+          onClick={() => (user ? handleNavigate('profile') : setShowAuthModal(true))}
+          className="flex items-center gap-2.5 min-w-0"
+        >
+          <img
+            src={user?.avatar_url || AVATAR_PRESETS[0].url}
+            alt={user?.username || 'Player'}
+            referrerPolicy="no-referrer"
+            className="w-9 h-9 rounded-full object-cover border-2 border-[#FACC15] bg-[#131A29] shrink-0"
+          />
+          <span className="font-display text-sm sm:text-base font-extrabold text-[#FACC15] truncate">
+            {user ? `Welcome, ${user.username}` : 'FREE FIRE TOURNAMENT 09'}
+          </span>
+        </button>
+      );
+    }
+    if (activeTab === 'tournaments') {
+      return (
+        <div className="flex items-center gap-2 min-w-0">
+          <Trophy className="w-5 h-5 text-[#FACC15] shrink-0" />
+          <span className="font-display text-base sm:text-lg font-extrabold text-[#FACC15] truncate">
+            Tournaments
+          </span>
+        </div>
+      );
+    }
+    if (activeTab === 'wallet') {
+      return (
+        <div className="flex items-center gap-2 min-w-0">
+          <Wallet className="w-5 h-5 text-[#FACC15] shrink-0" />
+          <span className="font-display text-base sm:text-lg font-extrabold text-[#FACC15] truncate">
+            My Wallet
+          </span>
+        </div>
+      );
+    }
+    if (activeTab === 'leaderboard') {
+      return (
+        <div className="flex items-center gap-2 min-w-0">
+          <Medal className="w-5 h-5 text-[#FACC15] shrink-0" />
+          <span className="font-display text-base sm:text-lg font-extrabold text-[#FACC15] truncate">
+            Leaderboard
+          </span>
+        </div>
+      );
+    }
+    if (activeTab === 'admin') {
+      return (
+        <div className="flex items-center gap-2 min-w-0">
+          <Shield className="w-5 h-5 text-[#FACC15] shrink-0" />
+          <span className="font-display text-base sm:text-lg font-extrabold text-[#FACC15] truncate">
+            Admin Console
+          </span>
+        </div>
+      );
+    }
+    return (
+      <div className="flex items-center gap-2 min-w-0">
+        <CircleUserRound className="w-5 h-5 text-[#FACC15] shrink-0" />
+        <span className="font-display text-base sm:text-lg font-extrabold text-[#FACC15] truncate">
+          My Profile
+        </span>
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-transparent text-slate-100 flex flex-col">
       {/* Top Bar */}
-      <header className="sticky top-0 z-40 h-14 lg:h-16 bg-[#04110A]/94 backdrop-blur-md border-b border-[#22C55E]/30">
-        <div className="max-w-7xl mx-auto h-full px-3.5 sm:px-6 flex items-center justify-between gap-4">
-          {/* Zone 1: Prominent Website Name */}
+      <header className="sticky top-0 z-40 h-14 lg:h-16 bg-[#0A0E17]/95 backdrop-blur-md border-b border-white/[0.07]">
+        <div className="max-w-7xl mx-auto h-full px-3.5 sm:px-6 flex items-center justify-between gap-3">
+          {/* Mobile Screen-Specific Header Left / Desktop Brand */}
+          <div className="lg:hidden min-w-0 flex-1">{renderMobileHeaderLeft()}</div>
+
           <button
             type="button"
             onClick={() => handleNavigate('home')}
-            className="font-display text-sm sm:text-lg lg:text-xl font-extrabold tracking-tight text-white inline-flex items-center gap-2 whitespace-nowrap shrink-0"
+            className="hidden lg:inline-flex font-display text-lg xl:text-xl font-extrabold tracking-tight text-white items-center gap-2 whitespace-nowrap shrink-0"
           >
             <Flame className="w-5 h-5 text-[#FACC15] shrink-0" />
             <span>FREE FIRE TOURNAMENT 09</span>
           </button>
 
-          {/* Zone 2: Clean Desktop Navigation */}
-          <nav className="hidden lg:flex items-center gap-6 text-sm font-medium" aria-label="Main navigation">
-            {desktopNavItems.map((item) => {
+          {/* Desktop Navigation */}
+          <nav
+            className="hidden lg:flex items-center gap-6 text-sm font-semibold"
+            aria-label="Main navigation"
+          >
+            {navItems.map((item) => {
               const isActive = activeTab === item.id;
               return (
                 <button
@@ -473,45 +624,77 @@ export default function App() {
                   onClick={() => handleNavigate(item.id)}
                   className={`py-1.5 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
                     isActive
-                      ? 'border-[#FACC15] text-[#FDE047]'
-                      : 'border-transparent text-emerald-100/75 hover:text-white'
+                      ? 'border-[#FACC15] text-[#FACC15]'
+                      : 'border-transparent text-slate-400 hover:text-white'
                   }`}
                 >
                   {item.label}
                 </button>
               );
             })}
-          </nav>
-
-          {/* Zone 3: Right Actions */}
-          <div className="flex items-center gap-2 shrink-0">
             {user?.role === 'admin' && (
               <button
                 type="button"
                 onClick={() => handleNavigate('admin')}
-                className="lg:hidden min-h-[38px] px-2.5 rounded-xl bg-[#15803D]/35 border border-[#FACC15]/50 text-[#FDE047] text-xs font-bold inline-flex items-center gap-1"
+                className={`py-1.5 border-b-2 transition-colors whitespace-nowrap shrink-0 ${
+                  activeTab === 'admin'
+                    ? 'border-[#FACC15] text-[#FACC15]'
+                    : 'border-transparent text-slate-400 hover:text-white'
+                }`}
+              >
+                Admin
+              </button>
+            )}
+          </nav>
+
+          {/* Right Actions (Bell on Home + Admin chip if admin + Rs. Balance Pill) */}
+          <div className="flex items-center gap-2 shrink-0">
+            {activeTab === 'home' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNotificationsModal(true);
+                  setUnreadAckCount(announcements.length);
+                }}
+                aria-label="Notifications"
+                className="relative w-9 h-9 rounded-full bg-[#131A29] border border-white/[0.1] hover:border-[#FACC15]/50 flex items-center justify-center text-[#FACC15] transition-colors"
+              >
+                <Bell className="w-4 h-4 fill-current" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-rose-500 text-white font-mono text-[10px] font-extrabold flex items-center justify-center leading-none">
+                    {unreadCount}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {user?.role === 'admin' && (
+              <button
+                type="button"
+                onClick={() => handleNavigate('admin')}
+                className="lg:hidden min-h-[34px] px-2.5 rounded-full bg-[#FACC15]/15 border border-[#FACC15]/50 text-[#FACC15] text-[11px] font-bold inline-flex items-center gap-1"
                 aria-label="Open Admin Panel"
               >
                 <Shield className="w-3.5 h-3.5" />
                 <span>Admin</span>
               </button>
             )}
+
             {user ? (
               <motion.button
                 type="button"
-                whileTap={{ scale: 0.97 }}
-                onClick={() => handleNavigate('profile')}
-                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#091D12] border border-[#22C55E]/40 hover:border-[#FACC15] text-xs sm:text-sm font-mono font-semibold text-white inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 tabular-nums transition-colors"
+                whileTap={{ scale: 0.96 }}
+                onClick={() => handleNavigate('wallet')}
+                className="min-h-[34px] px-3 py-1 rounded-full bg-[#1B1910] border border-[#FACC15]/55 hover:border-[#FACC15] text-xs font-display font-extrabold text-[#FACC15] inline-flex items-center whitespace-nowrap shrink-0 tabular-nums transition-colors"
               >
-                <Wallet className="w-3.5 h-3.5 text-[#FACC15]" />
-                <span>{formatPKR(user.wallet_balance)}</span>
+                {formatRs(user.wallet_balance)}
               </motion.button>
             ) : (
               <motion.button
                 type="button"
-                whileTap={{ scale: 0.97 }}
+                whileTap={{ scale: 0.96 }}
                 onClick={() => setShowAuthModal(true)}
-                className="min-h-[38px] px-3.5 py-1.5 rounded-xl ff-btn-ember text-xs sm:text-sm font-bold whitespace-nowrap shrink-0 transition-all"
+                className="min-h-[34px] px-3.5 py-1 rounded-full ff-btn-ember text-xs font-extrabold whitespace-nowrap shrink-0 transition-all"
               >
                 Sign In
               </motion.button>
@@ -523,14 +706,14 @@ export default function App() {
       <OfflineIndicator />
 
       {/* Main Content */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 pt-6 pb-24 lg:pb-12">
+      <main className="flex-1 max-w-6xl w-full mx-auto px-3.5 sm:px-6 pt-4 sm:pt-6 pb-24 lg:pb-12">
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
-            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
           >
             {activeTab === 'home' && (
               <HomeDashboard
@@ -546,6 +729,7 @@ export default function App() {
                 onNavigate={handleNavigate}
                 onOpenWallet={handleOpenWallet}
                 onOpenAuth={() => setShowAuthModal(true)}
+                onOpenLuckyDraw={openLuckyDraw}
               />
             )}
 
@@ -609,7 +793,7 @@ export default function App() {
       </main>
 
       {/* Desktop Footer */}
-      <footer className="hidden lg:block border-t border-[#22C55E]/20 py-6 text-xs text-emerald-100/70">
+      <footer className="hidden lg:block border-t border-white/[0.06] py-6 text-xs text-slate-400">
         <div className="max-w-7xl mx-auto px-6 flex items-center justify-between">
           <span>FREE FIRE TOURNAMENT 09 · Competitive Free Fire Esports Arena</span>
           <div className="flex items-center gap-5">
@@ -627,18 +811,18 @@ export default function App() {
             >
               Leaderboard
             </button>
-            <span className="text-emerald-300/60">JazzCash · Easypaisa · PKT</span>
+            <span className="text-slate-500">JazzCash · Easypaisa · PKT</span>
           </div>
         </div>
       </footer>
 
-      {/* Mobile Fixed Bottom Thumb Navigation */}
+      {/* Mobile Fixed 5-Tab Bottom Navigation (Matches Screenshots 1–5) */}
       <nav
         aria-label="Mobile navigation"
-        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#05150C]/95 backdrop-blur-md border-t border-[#22C55E]/30 pb-safe"
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0D121E]/95 backdrop-blur-lg border-t border-white/[0.08] pb-safe rounded-t-2xl"
       >
-        <div className="grid grid-cols-4 h-14 items-center">
-          {mobileNavItems.map((item) => {
+        <div className="grid grid-cols-5 h-16 items-center px-1">
+          {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
             return (
@@ -646,22 +830,209 @@ export default function App() {
                 key={item.id}
                 type="button"
                 onClick={() => handleNavigate(item.id)}
-                className={`h-full min-h-[44px] flex flex-col items-center justify-center gap-0.5 transition-colors ${
-                  isActive ? 'text-[#FACC15]' : 'text-emerald-100/70 hover:text-white'
-                }`}
+                className="relative h-full min-h-[44px] flex flex-col items-center justify-center gap-0.5 transition-colors"
               >
-                <Icon className={`w-5 h-5 ${isActive ? 'text-[#4ADE80]' : ''}`} />
-                <span className="text-[10px] font-medium tracking-tight">{item.label}</span>
+                {isActive && (
+                  <span className="absolute top-0.5 w-6 h-[2.5px] rounded-full bg-[#FACC15]" />
+                )}
+                <div
+                  className={`w-9 h-7 rounded-xl flex items-center justify-center transition-all ${
+                    isActive
+                      ? 'bg-[#FACC15]/15 text-[#FACC15] shadow-[0_0_20px_rgba(250,204,21,0.35)]'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Icon className="w-[18px] h-[18px]" />
+                </div>
+                <span
+                  className={`text-[10px] font-semibold tracking-tight ${
+                    isActive ? 'text-[#FACC15] font-bold' : 'text-slate-400'
+                  }`}
+                >
+                  {item.label}
+                </span>
+                {isActive && (
+                  <span className="w-1 h-1 rounded-full bg-[#FACC15]" />
+                )}
               </button>
             );
           })}
         </div>
       </nav>
 
-      {/* Floating WhatsApp Channel Icon (All Pages, Desktop & Mobile) */}
+      {/* Floating Golden WhatsApp Button */}
       <FloatingWhatsAppButton />
 
-      {/* Sign In / Sign Up / First-Run Admin Claim Modal */}
+      {/* MODAL: NOTIFICATIONS / ANNOUNCEMENTS */}
+      {showNotificationsModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setShowNotificationsModal(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-lg max-h-[85vh] overflow-y-auto bg-[#131A29] border border-white/[0.12] rounded-t-3xl sm:rounded-2xl p-5 sm:p-6 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="font-display text-lg font-extrabold text-white flex items-center gap-2">
+                <Bell className="w-5 h-5 text-[#FACC15]" />
+                <span>Notifications &amp; Announcements</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowNotificationsModal(false)}
+                aria-label="Close notifications"
+                className="min-h-[40px] min-w-[40px] rounded-xl bg-white/[0.06] text-slate-300 hover:text-white flex items-center justify-center"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {announcements.length === 0 ? (
+              <div className="py-8 text-center space-y-2">
+                <Megaphone className="w-9 h-9 text-slate-500 mx-auto" />
+                <p className="text-sm text-slate-400">
+                  No new announcements yet. Tournament alerts and results appear here.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {announcements.map((a) => (
+                  <div
+                    key={a.id}
+                    className="bg-[#0D1320] border border-white/[0.08] rounded-xl p-3.5 space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded-md bg-[#FACC15]/15 text-[#FACC15] font-bold">
+                          {a.category}
+                        </span>
+                        {a.is_pinned === 1 && (
+                          <span className="inline-flex items-center gap-1 text-[#FACC15] font-semibold">
+                            <Pin className="w-3 h-3" /> Pinned
+                          </span>
+                        )}
+                      </div>
+                      <span className="font-mono text-[11px] text-slate-400">
+                        {formatShortDate(a.created_at)}
+                      </span>
+                    </div>
+                    <div className="font-display text-sm font-bold text-white">{a.title}</div>
+                    <p className="text-xs text-slate-300 leading-relaxed">{a.content}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: DAILY LUCKY DRAW */}
+      {showLuckyDrawModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => setShowLuckyDrawModal(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-md max-h-[90vh] overflow-y-auto bg-[#131A29] border border-fuchsia-400/35 rounded-t-3xl sm:rounded-2xl p-6 space-y-5 shadow-2xl"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="font-display text-lg font-extrabold text-white flex items-center gap-2">
+                <Gift className="w-5 h-5 text-fuchsia-300" />
+                <span>Daily Lucky Draw</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowLuckyDrawModal(false)}
+                aria-label="Close Lucky Draw"
+                className="min-h-[40px] min-w-[40px] rounded-xl bg-white/[0.06] text-slate-300 hover:text-white flex items-center justify-center"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {luckyError && (
+              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs">
+                {luckyError}
+              </div>
+            )}
+
+            <div className="rounded-2xl bg-gradient-to-br from-fuchsia-500/15 via-[#0D1320] to-[#FACC15]/10 border border-white/[0.1] p-5 text-center space-y-3">
+              <div
+                className={`w-20 h-20 mx-auto rounded-full bg-gradient-to-tr from-fuchsia-400 to-[#FACC15] text-[#0A0E17] flex items-center justify-center shadow-[0_0_30px_rgba(232,121,249,0.4)] ${
+                  luckySpinning ? 'animate-spin' : ''
+                }`}
+              >
+                <Sparkles className="w-9 h-9" />
+              </div>
+
+              {luckyLoading ? (
+                <p className="text-xs text-slate-400">Checking daily spin status...</p>
+              ) : luckyTodayEntry ? (
+                <div className="space-y-1">
+                  <div className="text-xs font-bold uppercase tracking-wider text-fuchsia-300">
+                    Today&apos;s Result ({luckyTodayEntry.draw_date_pkt} PKT)
+                  </div>
+                  <div className="font-display text-2xl font-extrabold text-[#FACC15]">
+                    {luckyTodayEntry.prize_label}
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    {luckyTodayEntry.prize_amount > 0
+                      ? `${formatPKR(luckyTodayEntry.prize_amount)} was credited directly to your wallet.`
+                      : 'Come back after 12:00 AM PKT for your next free spin!'}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  <div className="font-display text-xl font-extrabold text-white">
+                    Win up to PKR 50 Daily!
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    One free spin every day (resets at 12:00 AM PKT). Rewards go straight to your wallet.
+                  </p>
+                </div>
+              )}
+
+              <button
+                type="button"
+                disabled={luckyLoading || !luckyCanSpin || luckySpinning}
+                onClick={handleSpinLuckyDraw}
+                className="ff-btn-lucky w-full min-h-[48px] rounded-xl font-display font-extrabold text-sm disabled:opacity-50"
+              >
+                {luckySpinning
+                  ? 'Spinning...'
+                  : luckyCanSpin
+                    ? 'Spin Free Lucky Draw'
+                    : 'Already Claimed Today'}
+              </button>
+            </div>
+
+            {luckyRecent.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  Recent Spins
+                </div>
+                <div className="divide-y divide-white/[0.06] bg-[#0D1320] border border-white/[0.08] rounded-xl px-3.5">
+                  {luckyRecent.slice(0, 5).map((item) => (
+                    <div
+                      key={item.id}
+                      className="py-2.5 flex items-center justify-between text-xs"
+                    >
+                      <span className="text-slate-300">{item.prize_label}</span>
+                      <span className="font-mono font-bold text-[#FACC15]">
+                        {item.draw_date_pkt}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Sign In / Sign Up / Admin Modal */}
       {showAuthModal && (
         <div
           className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"

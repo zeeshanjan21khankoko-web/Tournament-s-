@@ -13,7 +13,6 @@ import {
 
 export const KELLY_HERO_ARTWORK = '/src/assets/images/kelly_hero_banner_1795312122819.jpg';
 export const KELLY_TOURNAMENT_ARTWORK = '/src/assets/images/kelly_tournament_banner_1795312123415.jpg';
-export const CLASH_SQUAD_ARTWORK = '/src/assets/images/clash_squad_arena_1795312122438.jpg';
 
 export const TOURNAMENT_MODES = ['Battle Royale', 'Clash Squad', 'Lone Wolf'] as const;
 
@@ -36,25 +35,6 @@ export const AVATAR_PRESETS = [
   },
 ];
 
-export const BANNER_PRESETS = [
-  {
-    label: 'Kelly Battle Royale',
-    url: KELLY_TOURNAMENT_ARTWORK,
-  },
-  {
-    label: 'Kelly Championship Stage',
-    url: KELLY_HERO_ARTWORK,
-  },
-  {
-    label: 'Clash Squad Arena',
-    url: CLASH_SQUAD_ARTWORK,
-  },
-  {
-    label: 'Bermuda Squad Clash',
-    url: '/src/assets/images/tournament_freefire_clash_1795298801818.jpg',
-  },
-];
-
 export {
   formatPktCompact,
   formatPktDateTime,
@@ -72,15 +52,37 @@ export function formatPKR(amount: number | undefined | null): string {
   return `PKR ${num.toLocaleString('en-PK')}`;
 }
 
+export function formatRs(amount: number | undefined | null): string {
+  const num = Number(amount) || 0;
+  return `Rs. ${num.toLocaleString('en-PK')}`;
+}
+
+export function formatRelativeAgo(iso: string | null | undefined): string {
+  if (!iso) return 'Just now';
+  const normalized = iso.includes('T') ? iso : `${iso.replace(' ', 'T')}Z`;
+  const ts = Date.parse(normalized);
+  if (!Number.isFinite(ts)) return iso;
+  const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (diffSec < 60) return 'Just now';
+  const mins = Math.floor(diffSec / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 export function splitPrizePoolDefaults(
   totalPrizePool: number,
-  ratios: [number, number] = [0.5, 0.3]
-): { prize1st: number; prize2nd: number; prize3rd: number } {
+  ratios: [number, number, number, number] = [0.4, 0.25, 0.15, 0.12]
+): { prize1st: number; prize2nd: number; prize3rd: number; prize4th: number; prize5th: number } {
   const pool = Math.max(0, Math.floor(Number(totalPrizePool) || 0));
   const p1 = Math.round(pool * ratios[0]);
   const p2 = Math.round(pool * ratios[1]);
-  const p3 = Math.max(0, pool - p1 - p2);
-  return { prize1st: p1, prize2nd: p2, prize3rd: p3 };
+  const p3 = Math.round(pool * ratios[2]);
+  const p4 = Math.round(pool * ratios[3]);
+  const p5 = Math.max(0, pool - p1 - p2 - p3 - p4);
+  return { prize1st: p1, prize2nd: p2, prize3rd: p3, prize4th: p4, prize5th: p5 };
 }
 
 export function formatMatchTime(iso: string): string {

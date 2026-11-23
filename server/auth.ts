@@ -12,12 +12,14 @@ export interface AuthUser {
   player_id: string;
   username: string;
   email: string;
+  phone: string;
   avatar_url: string;
   role: 'player' | 'admin';
   is_blocked: number;
   wallet_balance: number;
   matches_played: number;
   wins: number;
+  kills: number;
   points: number;
   created_at: string;
 }
@@ -194,8 +196,8 @@ export function verifyToken(token: string): TokenPayload | null {
 }
 
 const USER_PUBLIC_COLUMNS = `
-  id, player_id, username, email, avatar_url, role, is_blocked,
-  wallet_balance, matches_played, wins, points, created_at
+  id, player_id, username, email, phone, avatar_url, role, is_blocked,
+  wallet_balance, matches_played, wins, kills, points, created_at
 `;
 
 export function getUserById(userId: number): AuthUser | undefined {

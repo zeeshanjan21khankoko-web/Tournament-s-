@@ -55,6 +55,8 @@ export function initDatabase(): void {
       prize_1st INTEGER NOT NULL DEFAULT 0 CHECK(prize_1st >= 0),
       prize_2nd INTEGER NOT NULL DEFAULT 0 CHECK(prize_2nd >= 0),
       prize_3rd INTEGER NOT NULL DEFAULT 0 CHECK(prize_3rd >= 0),
+      prize_4th INTEGER NOT NULL DEFAULT 0 CHECK(prize_4th >= 0),
+      prize_5th INTEGER NOT NULL DEFAULT 0 CHECK(prize_5th >= 0),
       max_slots INTEGER NOT NULL CHECK(max_slots > 0),
       filled_slots INTEGER NOT NULL DEFAULT 0 CHECK(filled_slots >= 0),
       match_time TEXT NOT NULL,
@@ -201,12 +203,28 @@ export function initDatabase(): void {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS lucky_draw_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      draw_date_pkt TEXT NOT NULL,
+      prize_amount INTEGER NOT NULL DEFAULT 0 CHECK(prize_amount >= 0),
+      prize_label TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(user_id, draw_date_pkt)
+    );
   `);
 
   // Safe schema migration for existing SQLite databases
   const userColumns = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>;
   if (!userColumns.some((col) => col.name === 'points')) {
     db.exec('ALTER TABLE users ADD COLUMN points INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!userColumns.some((col) => col.name === 'phone')) {
+    db.exec("ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT ''");
+  }
+  if (!userColumns.some((col) => col.name === 'kills')) {
+    db.exec('ALTER TABLE users ADD COLUMN kills INTEGER NOT NULL DEFAULT 0');
   }
 
   const tournamentColumns = db.prepare('PRAGMA table_info(tournaments)').all() as Array<{ name: string }>;
@@ -225,13 +243,21 @@ export function initDatabase(): void {
   if (!tournamentColumns.some((col) => col.name === 'prize_3rd')) {
     db.exec('ALTER TABLE tournaments ADD COLUMN prize_3rd INTEGER NOT NULL DEFAULT 0');
   }
+  if (!tournamentColumns.some((col) => col.name === 'prize_4th')) {
+    db.exec('ALTER TABLE tournaments ADD COLUMN prize_4th INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!tournamentColumns.some((col) => col.name === 'prize_5th')) {
+    db.exec('ALTER TABLE tournaments ADD COLUMN prize_5th INTEGER NOT NULL DEFAULT 0');
+  }
   db.exec(`
     UPDATE tournaments
     SET
-      prize_1st = CAST(ROUND(prize_pool * 0.50) AS INTEGER),
-      prize_2nd = CAST(ROUND(prize_pool * 0.30) AS INTEGER),
-      prize_3rd = MAX(0, prize_pool - CAST(ROUND(prize_pool * 0.50) AS INTEGER) - CAST(ROUND(prize_pool * 0.30) AS INTEGER))
-    WHERE prize_1st = 0 AND prize_2nd = 0 AND prize_3rd = 0 AND prize_pool > 0;
+      prize_1st = CAST(ROUND(prize_pool * 0.40) AS INTEGER),
+      prize_2nd = CAST(ROUND(prize_pool * 0.25) AS INTEGER),
+      prize_3rd = CAST(ROUND(prize_pool * 0.15) AS INTEGER),
+      prize_4th = CAST(ROUND(prize_pool * 0.12) AS INTEGER),
+      prize_5th = MAX(0, prize_pool - CAST(ROUND(prize_pool * 0.40) AS INTEGER) - CAST(ROUND(prize_pool * 0.25) AS INTEGER) - CAST(ROUND(prize_pool * 0.15) AS INTEGER) - CAST(ROUND(prize_pool * 0.12) AS INTEGER))
+    WHERE prize_1st = 0 AND prize_2nd = 0 AND prize_3rd = 0 AND prize_4th = 0 AND prize_5th = 0 AND prize_pool > 0;
   `);
 
   const withdrawalsSchema = db
@@ -278,7 +304,12 @@ export function initDatabase(): void {
   const transactionsSchema = db
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transactions'")
     .get() as { sql?: string } | undefined;
-  if (transactionsSchema?.sql && !transactionsSchema.sql.includes("'paid'")) {
+  if (
+    transactionsSchema?.sql &&
+    (!transactionsSchema.sql.includes("'paid'") ||
+      !transactionsSchema.sql.includes("'transfer_out'") ||
+      !transactionsSchema.sql.includes("'lucky_draw'"))
+  ) {
     db.pragma('foreign_keys = OFF');
     db.transaction(() => {
       db.exec(`
@@ -286,7 +317,7 @@ export function initDatabase(): void {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           tx_code TEXT UNIQUE NOT NULL,
           user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          type TEXT NOT NULL CHECK(type IN ('deposit', 'withdrawal', 'entry_fee', 'prize_win', 'refund', 'admin_adjustment')),
+          type TEXT NOT NULL CHECK(type IN ('deposit', 'withdrawal', 'entry_fee', 'prize_win', 'refund', 'admin_adjustment', 'transfer_out', 'transfer_in', 'lucky_draw')),
           amount INTEGER NOT NULL CHECK(amount >= 0),
           direction TEXT NOT NULL CHECK(direction IN ('credit', 'debit')),
           balance_after INTEGER NOT NULL,
@@ -479,22 +510,37 @@ export function recalculateAllUserPoints(): void {
     regCounts.set(row.user_id, row.cnt);
   }
 
-  const winStats = new Map<number, { p1: number; p2: number; p3: number; total: number }>();
+  const winStats = new Map<
+    number,
+    { p1: number; p2: number; p3: number; p4: number; p5: number; total: number }
+  >();
   for (const row of db
     .prepare(
       `SELECT user_id,
               SUM(CASE WHEN placement = 1 THEN 1 ELSE 0 END) as p1,
               SUM(CASE WHEN placement = 2 THEN 1 ELSE 0 END) as p2,
               SUM(CASE WHEN placement = 3 THEN 1 ELSE 0 END) as p3,
+              SUM(CASE WHEN placement = 4 THEN 1 ELSE 0 END) as p4,
+              SUM(CASE WHEN placement = 5 THEN 1 ELSE 0 END) as p5,
               COUNT(*) as total
        FROM winners
        GROUP BY user_id`
     )
-    .all() as Array<{ user_id: number; p1: number; p2: number; p3: number; total: number }>) {
+    .all() as Array<{
+    user_id: number;
+    p1: number;
+    p2: number;
+    p3: number;
+    p4: number;
+    p5: number;
+    total: number;
+  }>) {
     winStats.set(row.user_id, {
       p1: Number(row.p1 || 0),
       p2: Number(row.p2 || 0),
       p3: Number(row.p3 || 0),
+      p4: Number(row.p4 || 0),
+      p5: Number(row.p5 || 0),
       total: Number(row.total || 0),
     });
   }
@@ -502,7 +548,7 @@ export function recalculateAllUserPoints(): void {
   const updateStmt = db.prepare('UPDATE users SET points = ? WHERE id = ?');
   db.transaction(() => {
     for (const u of userRows) {
-      const ws = winStats.get(u.id) || { p1: 0, p2: 0, p3: 0, total: 0 };
+      const ws = winStats.get(u.id) || { p1: 0, p2: 0, p3: 0, p4: 0, p5: 0, total: 0 };
       const regCount = regCounts.get(u.id) || 0;
       const matches = Math.max(regCount, u.matches_played || 0, ws.total);
       const totalWins = Math.max(ws.p1, u.wins || 0);
@@ -511,6 +557,8 @@ export function recalculateAllUserPoints(): void {
         ws.p1 * 100 +
         ws.p2 * 60 +
         ws.p3 * 40 +
+        ws.p4 * 25 +
+        ws.p5 * 15 +
         extraAdminWins * 100 +
         matches * 10;
       updateStmt.run(points, u.id);

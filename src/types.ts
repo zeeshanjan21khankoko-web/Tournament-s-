@@ -3,12 +3,14 @@ export interface UserProfile {
   player_id: string;
   username: string;
   email: string;
+  phone?: string;
   avatar_url: string;
   role: 'player' | 'admin';
   is_blocked: number;
   wallet_balance: number;
   matches_played: number;
   wins: number;
+  kills?: number;
   points?: number;
   created_at: string;
 }
@@ -59,6 +61,8 @@ export interface Tournament {
   prize_1st: number;
   prize_2nd: number;
   prize_3rd: number;
+  prize_4th: number;
+  prize_5th: number;
   max_slots: number;
   filled_slots: number;
   match_time: string;
@@ -124,7 +128,16 @@ export interface TransactionRecord {
   user_id?: number;
   username?: string;
   player_id?: string;
-  type: 'deposit' | 'withdrawal' | 'entry_fee' | 'prize_win' | 'refund' | 'admin_adjustment';
+  type:
+    | 'deposit'
+    | 'withdrawal'
+    | 'entry_fee'
+    | 'prize_win'
+    | 'refund'
+    | 'admin_adjustment'
+    | 'transfer_out'
+    | 'transfer_in'
+    | 'lucky_draw';
   amount: number;
   direction: 'credit' | 'debit';
   balance_after: number;
@@ -223,11 +236,14 @@ export interface LeaderboardEntry {
   points: number;
   matches: number;
   wins: number;
+  kills?: number;
   losses: number;
   win_rate: number;
   first_places: number;
   second_places: number;
   third_places: number;
+  fourth_places?: number;
+  fifth_places?: number;
   podiums: number;
   total_prize_won: number;
 }

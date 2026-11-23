@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'node:crypto';
 import express, { type Request, type Response } from 'express';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -248,7 +249,7 @@ app.get('/api/leaderboard', (req: Request, res: Response) => {
 
     const userRows = db
       .prepare(
-        `SELECT u.id, u.player_id, u.username, u.avatar_url, u.role, u.matches_played, u.wins, u.points,
+        `SELECT u.id, u.player_id, u.username, u.avatar_url, u.role, u.matches_played, u.wins, u.kills, u.points,
                 COALESCE(w.total_won, 0) as total_won
          FROM users u
          LEFT JOIN wallet_accounts w ON w.user_id = u.id
@@ -262,6 +263,7 @@ app.get('/api/leaderboard', (req: Request, res: Response) => {
       role: 'player' | 'admin';
       matches_played: number;
       wins: number;
+      kills: number;
       points: number;
       total_won: number;
     }>;
@@ -308,15 +310,25 @@ app.get('/api/leaderboard', (req: Request, res: Response) => {
 
     const winMap = new Map<
       number,
-      { p1: number; p2: number; p3: number; total: number; prizeSum: number }
+      { p1: number; p2: number; p3: number; p4: number; p5: number; total: number; prizeSum: number }
     >();
     for (const w of winnerRows) {
       if (modeFilter !== 'all' && normalizeMode(w.mode) !== modeFilter) continue;
       if (windowStartMs > 0 && parseDbTimestampMs(w.declared_at) < windowStartMs) continue;
-      const cur = winMap.get(w.user_id) || { p1: 0, p2: 0, p3: 0, total: 0, prizeSum: 0 };
+      const cur = winMap.get(w.user_id) || {
+        p1: 0,
+        p2: 0,
+        p3: 0,
+        p4: 0,
+        p5: 0,
+        total: 0,
+        prizeSum: 0,
+      };
       if (w.placement === 1) cur.p1 += 1;
       else if (w.placement === 2) cur.p2 += 1;
       else if (w.placement === 3) cur.p3 += 1;
+      else if (w.placement === 4) cur.p4 += 1;
+      else if (w.placement === 5) cur.p5 += 1;
       cur.total += 1;
       cur.prizeSum += Number(w.prize_amount || 0);
       winMap.set(w.user_id, cur);
@@ -326,7 +338,15 @@ app.get('/api/leaderboard', (req: Request, res: Response) => {
     const ranked = userRows
       .map((u) => {
         const regCount = regMap.get(u.id) || 0;
-        const wStat = winMap.get(u.id) || { p1: 0, p2: 0, p3: 0, total: 0, prizeSum: 0 };
+        const wStat = winMap.get(u.id) || {
+          p1: 0,
+          p2: 0,
+          p3: 0,
+          p4: 0,
+          p5: 0,
+          total: 0,
+          prizeSum: 0,
+        };
         const matches = isUnfilteredAllTime
           ? Math.max(regCount, Number(u.matches_played || 0), wStat.total)
           : Math.max(regCount, wStat.total);
@@ -341,12 +361,14 @@ app.get('/api/leaderboard', (req: Request, res: Response) => {
           wStat.p1 * 100 +
           wStat.p2 * 60 +
           wStat.p3 * 40 +
+          wStat.p4 * 25 +
+          wStat.p5 * 15 +
           extraAdminWins * 100 +
           matches * 10;
         const totalPrizeWon = isUnfilteredAllTime
           ? Math.max(wStat.prizeSum, Number(u.total_won || 0))
           : wStat.prizeSum;
-        const podiums = wStat.p1 + wStat.p2 + wStat.p3;
+        const podiums = wStat.p1 + wStat.p2 + wStat.p3 + wStat.p4 + wStat.p5;
 
         return {
           user_id: u.id,
@@ -357,11 +379,14 @@ app.get('/api/leaderboard', (req: Request, res: Response) => {
           points,
           matches,
           wins,
+          kills: Number(u.kills || 0),
           losses,
           win_rate: winRate,
           first_places: wStat.p1,
           second_places: wStat.p2,
           third_places: wStat.p3,
+          fourth_places: wStat.p4,
+          fifth_places: wStat.p5,
           podiums,
           total_prize_won: totalPrizeWon,
         };
@@ -707,6 +732,7 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
   try {
     const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
     const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const phone = typeof req.body.phone === 'string' ? req.body.phone.trim().slice(0, 24) : '';
     const password = typeof req.body.password === 'string' ? req.body.password : '';
     const avatarChecked = validateImageInput(req.body.avatarUrl || '/src/assets/images/avatar_esports_pro_1795298801657.jpg', 1024 * 1024);
 
@@ -718,6 +744,10 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       res.status(400).json({ error: 'Please provide a valid email address.' });
+      return;
+    }
+    if (phone && !/^[0-9+\-\s()]{6,20}$/.test(phone)) {
+      res.status(400).json({ error: 'Please enter a valid phone number.' });
       return;
     }
     if (password.length < 6 || password.length > 128) {
@@ -744,10 +774,10 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     const userId = db.transaction(() => {
       const info = db
         .prepare(
-          `INSERT INTO users (player_id, username, email, password_hash, avatar_url, role, wallet_balance)
-           VALUES (?, ?, ?, ?, ?, 'player', 0)`
+          `INSERT INTO users (player_id, username, email, phone, password_hash, avatar_url, role, wallet_balance)
+           VALUES (?, ?, ?, ?, ?, ?, 'player', 0)`
         )
-        .run(playerId, username, email, passwordHash, avatarUrl);
+        .run(playerId, username, email, phone, passwordHash, avatarUrl);
       const newId = Number(info.lastInsertRowid);
       db.prepare('INSERT INTO wallet_accounts (user_id, available_balance) VALUES (?, 0)').run(newId);
       return newId;
@@ -905,6 +935,10 @@ app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response) 
 app.patch('/api/auth/profile', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
     const username = typeof req.body.username === 'string' ? req.body.username.trim() : req.user!.username;
+    const phone =
+      req.body.phone !== undefined
+        ? (typeof req.body.phone === 'string' ? req.body.phone.trim() : '')
+        : req.user!.phone;
     const avatarChecked =
       req.body.avatarUrl !== undefined
         ? validateImageInput(req.body.avatarUrl, 1024 * 1024)
@@ -912,6 +946,10 @@ app.patch('/api/auth/profile', requireAuth, (req: AuthenticatedRequest, res: Res
 
     if (username.length < 3 || username.length > 24 || !/^[a-zA-Z0-9_.-]+$/.test(username)) {
       res.status(400).json({ error: 'Username must be 3–24 valid characters.' });
+      return;
+    }
+    if (phone && !/^[0-9+\-\s()]{6,20}$/.test(phone)) {
+      res.status(400).json({ error: 'Phone number must be 6–20 valid phone characters.' });
       return;
     }
     if (avatarChecked === null) {
@@ -927,8 +965,9 @@ app.patch('/api/auth/profile', requireAuth, (req: AuthenticatedRequest, res: Res
       return;
     }
 
-    db.prepare('UPDATE users SET username = ?, avatar_url = ? WHERE id = ?').run(
+    db.prepare('UPDATE users SET username = ?, phone = ?, avatar_url = ? WHERE id = ?').run(
       username,
+      phone,
       avatarChecked,
       req.user!.id
     );
@@ -936,6 +975,37 @@ app.patch('/api/auth/profile', requireAuth, (req: AuthenticatedRequest, res: Res
   } catch (err) {
     console.error('Profile update error:', err);
     res.status(500).json({ error: 'Failed to update profile.' });
+  }
+});
+
+app.post('/api/auth/change-password', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const currentPassword = typeof req.body.currentPassword === 'string' ? req.body.currentPassword : '';
+    const newPassword = typeof req.body.newPassword === 'string' ? req.body.newPassword : '';
+
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({ error: 'Current password and new password are required.' });
+      return;
+    }
+    if (newPassword.length < 6 || newPassword.length > 128) {
+      res.status(400).json({ error: 'New password must be between 6 and 128 characters.' });
+      return;
+    }
+
+    const userRow = db
+      .prepare('SELECT password_hash FROM users WHERE id = ?')
+      .get(req.user!.id) as { password_hash: string } | undefined;
+    if (!userRow || !verifyPassword(currentPassword, userRow.password_hash)) {
+      res.status(401).json({ error: 'Current password is incorrect.' });
+      return;
+    }
+
+    const nextHash = hashPassword(newPassword);
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(nextHash, req.user!.id);
+    res.json({ ok: true, message: 'Password updated successfully.' });
+  } catch (err) {
+    console.error('Change password error:', err);
+    res.status(500).json({ error: 'Failed to update password.' });
   }
 });
 
@@ -977,10 +1047,15 @@ function enrichTournament(t: Record<string, unknown>, viewer: ReturnType<typeof 
   const rawP1 = Number(t.prize_1st ?? 0);
   const rawP2 = Number(t.prize_2nd ?? 0);
   const rawP3 = Number(t.prize_3rd ?? 0);
-  const hasExplicitBreakdown = rawP1 > 0 || rawP2 > 0 || rawP3 > 0;
-  const fallbackP1 = Math.round(rawPool * 0.5);
-  const fallbackP2 = Math.round(rawPool * 0.3);
-  const fallbackP3 = Math.max(0, rawPool - fallbackP1 - fallbackP2);
+  const rawP4 = Number(t.prize_4th ?? 0);
+  const rawP5 = Number(t.prize_5th ?? 0);
+  const hasExplicitBreakdown =
+    rawP1 > 0 || rawP2 > 0 || rawP3 > 0 || rawP4 > 0 || rawP5 > 0;
+  const fallbackP1 = Math.round(rawPool * 0.4);
+  const fallbackP2 = Math.round(rawPool * 0.25);
+  const fallbackP3 = Math.round(rawPool * 0.15);
+  const fallbackP4 = Math.round(rawPool * 0.12);
+  const fallbackP5 = Math.max(0, rawPool - fallbackP1 - fallbackP2 - fallbackP3 - fallbackP4);
 
   return {
     id: t.id,
@@ -992,6 +1067,8 @@ function enrichTournament(t: Record<string, unknown>, viewer: ReturnType<typeof 
     prize_1st: hasExplicitBreakdown ? rawP1 : fallbackP1,
     prize_2nd: hasExplicitBreakdown ? rawP2 : fallbackP2,
     prize_3rd: hasExplicitBreakdown ? rawP3 : fallbackP3,
+    prize_4th: hasExplicitBreakdown ? rawP4 : fallbackP4,
+    prize_5th: hasExplicitBreakdown ? rawP5 : fallbackP5,
     max_slots: t.max_slots,
     filled_slots: t.filled_slots,
     match_time: t.match_time,
@@ -1401,6 +1478,240 @@ app.post('/api/wallet/withdraw', requireAuth, (req: AuthenticatedRequest, res: R
   }
 });
 
+// --- SEND TO FRIEND (P2P WALLET TRANSFER) ---
+app.post('/api/wallet/transfer', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const recipientIdentifier =
+      typeof req.body.recipientIdentifier === 'string' ? req.body.recipientIdentifier.trim() : '';
+    const amount = Math.floor(Number(req.body.amount));
+    const note = typeof req.body.note === 'string' ? req.body.note.trim().slice(0, 100) : '';
+
+    if (!recipientIdentifier || recipientIdentifier.length < 2) {
+      res.status(400).json({ error: 'Enter your friend’s Player ID, username, or email.' });
+      return;
+    }
+    if (!Number.isInteger(amount) || amount < 10 || amount > 100000) {
+      res.status(400).json({ error: 'Transfer amount must be between PKR 10 and PKR 100,000.' });
+      return;
+    }
+
+    const result = db.transaction(() => {
+      const recipient = db
+        .prepare(
+          `SELECT id, username, player_id, is_blocked, wallet_balance
+           FROM users
+           WHERE upper(player_id) = upper(?) OR lower(username) = lower(?) OR lower(email) = lower(?)`
+        )
+        .get(recipientIdentifier, recipientIdentifier, recipientIdentifier) as
+        | { id: number; username: string; player_id: string; is_blocked: number; wallet_balance: number }
+        | undefined;
+
+      if (!recipient) {
+        return { status: 404, error: 'No player found with that Player ID, username, or email.' };
+      }
+      if (recipient.id === req.user!.id) {
+        return { status: 400, error: 'You cannot send funds to your own account.' };
+      }
+      if (recipient.is_blocked === 1) {
+        return { status: 400, error: 'Recipient account is currently unavailable.' };
+      }
+
+      db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
+        req.user!.id,
+        req.user!.wallet_balance
+      );
+      db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
+        recipient.id,
+        recipient.wallet_balance
+      );
+
+      const senderWallet = db
+        .prepare('SELECT available_balance, pending_withdrawal FROM wallet_accounts WHERE user_id = ?')
+        .get(req.user!.id) as { available_balance: number; pending_withdrawal: number };
+      const spendable = Math.max(0, senderWallet.available_balance - senderWallet.pending_withdrawal);
+
+      if (amount > spendable) {
+        return {
+          status: 400,
+          error: `Insufficient spendable balance. Available: PKR ${spendable}.`,
+        };
+      }
+
+      const recipientWallet = db
+        .prepare('SELECT available_balance FROM wallet_accounts WHERE user_id = ?')
+        .get(recipient.id) as { available_balance: number };
+
+      const nextSenderBal = senderWallet.available_balance - amount;
+      const nextRecipientBal = recipientWallet.available_balance + amount;
+
+      db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(nextSenderBal, req.user!.id);
+      db.prepare("UPDATE wallet_accounts SET available_balance = ?, updated_at = datetime('now') WHERE user_id = ?").run(
+        nextSenderBal,
+        req.user!.id
+      );
+
+      db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(nextRecipientBal, recipient.id);
+      db.prepare("UPDATE wallet_accounts SET available_balance = ?, updated_at = datetime('now') WHERE user_id = ?").run(
+        nextRecipientBal,
+        recipient.id
+      );
+
+      const noteSuffix = note ? ` (${note})` : '';
+      db.prepare(
+        `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
+         VALUES (?, ?, 'transfer_out', ?, 'debit', ?, 'completed', ?, ?)`
+      ).run(
+        generateTxCode(),
+        req.user!.id,
+        amount,
+        nextSenderBal,
+        `XFER-${recipient.player_id}`,
+        `Sent to ${recipient.username} (${recipient.player_id})${noteSuffix}`
+      );
+
+      db.prepare(
+        `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
+         VALUES (?, ?, 'transfer_in', ?, 'credit', ?, 'completed', ?, ?)`
+      ).run(
+        generateTxCode(),
+        recipient.id,
+        amount,
+        nextRecipientBal,
+        `XFER-${req.user!.player_id}`,
+        `Received from ${req.user!.username} (${req.user!.player_id})${noteSuffix}`
+      );
+
+      return { status: 200, recipientUsername: recipient.username, recipientPlayerId: recipient.player_id };
+    }).immediate();
+
+    if ('error' in result) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      message: `Sent PKR ${amount.toLocaleString('en-PK')} to ${result.recipientUsername} (${result.recipientPlayerId}).`,
+      user: getUserById(req.user!.id),
+    });
+  } catch (err) {
+    console.error('Wallet transfer error:', err);
+    res.status(500).json({ error: 'Failed to send funds.' });
+  }
+});
+
+// --- DAILY LUCKY DRAW ---
+function getTodayPktDateKey(): string {
+  const pkt = new Date(Date.now() + PKT_OFFSET_MS);
+  const y = pkt.getUTCFullYear();
+  const m = String(pkt.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(pkt.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+app.get('/api/lucky-draw', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const todayPkt = getTodayPktDateKey();
+  const todayEntry = db
+    .prepare('SELECT id, draw_date_pkt, prize_amount, prize_label, created_at FROM lucky_draw_entries WHERE user_id = ? AND draw_date_pkt = ?')
+    .get(req.user!.id, todayPkt);
+  const recentEntries = db
+    .prepare('SELECT id, draw_date_pkt, prize_amount, prize_label, created_at FROM lucky_draw_entries WHERE user_id = ? ORDER BY id DESC LIMIT 10')
+    .all(req.user!.id);
+  res.json({
+    todayPkt,
+    canSpin: !todayEntry,
+    todayEntry: todayEntry || null,
+    recentEntries,
+  });
+});
+
+app.post('/api/lucky-draw/spin', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const todayPkt = getTodayPktDateKey();
+    const rewardTable = [
+      { weight: 30, amount: 5, label: 'PKR 5 Lucky Bonus' },
+      { weight: 28, amount: 10, label: 'PKR 10 Arena Bonus' },
+      { weight: 18, amount: 15, label: 'PKR 15 Booyah Spark' },
+      { weight: 10, amount: 25, label: 'PKR 25 Gold Drop' },
+      { weight: 4, amount: 50, label: 'PKR 50 Mega Jackpot' },
+      { weight: 10, amount: 0, label: 'Better Luck Tomorrow' },
+    ];
+    const totalWeight = rewardTable.reduce((acc, r) => acc + r.weight, 0);
+    let roll = crypto.randomInt(0, totalWeight);
+    let chosen = rewardTable[0];
+    for (const item of rewardTable) {
+      if (roll < item.weight) {
+        chosen = item;
+        break;
+      }
+      roll -= item.weight;
+    }
+
+    const result = db.transaction(() => {
+      const existing = db
+        .prepare('SELECT id FROM lucky_draw_entries WHERE user_id = ? AND draw_date_pkt = ?')
+        .get(req.user!.id, todayPkt);
+      if (existing) {
+        return { conflict: 'You have already claimed today’s Lucky Draw spin. Come back after 12:00 AM PKT!' };
+      }
+
+      const info = db
+        .prepare(
+          `INSERT INTO lucky_draw_entries (user_id, draw_date_pkt, prize_amount, prize_label)
+           VALUES (?, ?, ?, ?)`
+        )
+        .run(req.user!.id, todayPkt, chosen.amount, chosen.label);
+
+      if (chosen.amount > 0) {
+        db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
+          req.user!.id,
+          req.user!.wallet_balance
+        );
+        const wallet = db
+          .prepare('SELECT available_balance FROM wallet_accounts WHERE user_id = ?')
+          .get(req.user!.id) as { available_balance: number };
+        const nextBal = wallet.available_balance + chosen.amount;
+
+        db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(nextBal, req.user!.id);
+        db.prepare("UPDATE wallet_accounts SET available_balance = ?, updated_at = datetime('now') WHERE user_id = ?").run(
+          nextBal,
+          req.user!.id
+        );
+        db.prepare(
+          `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
+           VALUES (?, ?, 'lucky_draw', ?, 'credit', ?, 'completed', ?, ?)`
+        ).run(
+          generateTxCode(),
+          req.user!.id,
+          chosen.amount,
+          nextBal,
+          `LUCKY-${todayPkt}`,
+          `Daily Lucky Draw Reward — ${chosen.label}`
+        );
+      }
+
+      const entry = db
+        .prepare('SELECT id, draw_date_pkt, prize_amount, prize_label, created_at FROM lucky_draw_entries WHERE id = ?')
+        .get(Number(info.lastInsertRowid));
+      return { entry };
+    }).immediate();
+
+    if ('conflict' in result) {
+      res.status(409).json({ error: result.conflict });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      entry: result.entry,
+      user: getUserById(req.user!.id),
+    });
+  } catch (err) {
+    console.error('Lucky draw spin error:', err);
+    res.status(500).json({ error: 'Failed to spin Lucky Draw.' });
+  }
+});
+
 // --- ADMIN PANEL ENDPOINTS ---
 app.get('/api/admin/overview', requireAuth, requireAdmin, (_req: AuthenticatedRequest, res: Response) => {
   const userStats = db
@@ -1481,8 +1792,8 @@ app.get('/api/admin/overview', requireAuth, requireAdmin, (_req: AuthenticatedRe
 app.get('/api/admin/users', requireAuth, requireAdmin, (_req: AuthenticatedRequest, res: Response) => {
   const users = db
     .prepare(
-      `SELECT u.id, u.player_id, u.username, u.email, u.avatar_url, u.role, u.is_blocked,
-              u.wallet_balance, u.matches_played, u.wins, u.created_at,
+      `SELECT u.id, u.player_id, u.username, u.email, u.phone, u.avatar_url, u.role, u.is_blocked,
+              u.wallet_balance, u.matches_played, u.wins, u.kills, u.points, u.created_at,
               w.pending_withdrawal, w.total_deposited, w.total_withdrawn, w.total_won
        FROM users u
        LEFT JOIN wallet_accounts w ON w.user_id = u.id
@@ -1761,19 +2072,25 @@ app.post('/api/admin/tournaments', requireAuth, requireAdmin, (req: Authenticate
     const hasSplitInputs =
       req.body.prize1st !== undefined ||
       req.body.prize2nd !== undefined ||
-      req.body.prize3rd !== undefined;
+      req.body.prize3rd !== undefined ||
+      req.body.prize4th !== undefined ||
+      req.body.prize5th !== undefined;
     const rawPoolInput = req.body.prizePool !== undefined ? Math.floor(Number(req.body.prizePool)) : 0;
     let prize1st = req.body.prize1st !== undefined ? Math.floor(Number(req.body.prize1st)) : 0;
     let prize2nd = req.body.prize2nd !== undefined ? Math.floor(Number(req.body.prize2nd)) : 0;
     let prize3rd = req.body.prize3rd !== undefined ? Math.floor(Number(req.body.prize3rd)) : 0;
+    let prize4th = req.body.prize4th !== undefined ? Math.floor(Number(req.body.prize4th)) : 0;
+    let prize5th = req.body.prize5th !== undefined ? Math.floor(Number(req.body.prize5th)) : 0;
 
     if (!hasSplitInputs && Number.isFinite(rawPoolInput) && rawPoolInput > 0) {
-      prize1st = Math.round(rawPoolInput * 0.5);
-      prize2nd = Math.round(rawPoolInput * 0.3);
-      prize3rd = Math.max(0, rawPoolInput - prize1st - prize2nd);
+      prize1st = Math.round(rawPoolInput * 0.4);
+      prize2nd = Math.round(rawPoolInput * 0.25);
+      prize3rd = Math.round(rawPoolInput * 0.15);
+      prize4th = Math.round(rawPoolInput * 0.12);
+      prize5th = Math.max(0, rawPoolInput - prize1st - prize2nd - prize3rd - prize4th);
     }
 
-    const splitSum = prize1st + prize2nd + prize3rd;
+    const splitSum = prize1st + prize2nd + prize3rd + prize4th + prize5th;
     const prizePool = hasSplitInputs
       ? Math.max(splitSum, Number.isFinite(rawPoolInput) ? rawPoolInput : 0)
       : rawPoolInput;
@@ -1801,9 +2118,13 @@ app.post('/api/admin/tournaments', requireAuth, requireAdmin, (req: Authenticate
       !Number.isFinite(prize2nd) ||
       prize2nd < 0 ||
       !Number.isFinite(prize3rd) ||
-      prize3rd < 0
+      prize3rd < 0 ||
+      !Number.isFinite(prize4th) ||
+      prize4th < 0 ||
+      !Number.isFinite(prize5th) ||
+      prize5th < 0
     ) {
-      res.status(400).json({ error: 'Entry fee and 1st/2nd/3rd place prizes must be 0 or greater.' });
+      res.status(400).json({ error: 'Entry fee and 1st–5th place prizes must be 0 or greater.' });
       return;
     }
     if (!Number.isFinite(maxSlots) || maxSlots < 2 || maxSlots > 500) {
@@ -1844,9 +2165,9 @@ app.post('/api/admin/tournaments', requireAuth, requireAdmin, (req: Authenticate
     const info = db
       .prepare(
         `INSERT INTO tournaments (
-           title, game_name, mode, entry_fee, prize_pool, prize_1st, prize_2nd, prize_3rd, max_slots, match_time, end_time,
-           status, banner_url, rules, room_id, room_pass, created_by
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           title, game_name, mode, entry_fee, prize_pool, prize_1st, prize_2nd, prize_3rd, prize_4th, prize_5th,
+           max_slots, match_time, end_time, status, banner_url, rules, room_id, room_pass, created_by
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         title,
@@ -1857,6 +2178,8 @@ app.post('/api/admin/tournaments', requireAuth, requireAdmin, (req: Authenticate
         prize1st,
         prize2nd,
         prize3rd,
+        prize4th,
+        prize5th,
         maxSlots,
         normalizedStart,
         normalizedEnd,
@@ -1901,7 +2224,9 @@ app.patch('/api/admin/tournaments/:id', requireAuth, requireAdmin, (req: Authent
     const hasSplitPatch =
       req.body.prize1st !== undefined ||
       req.body.prize2nd !== undefined ||
-      req.body.prize3rd !== undefined;
+      req.body.prize3rd !== undefined ||
+      req.body.prize4th !== undefined ||
+      req.body.prize5th !== undefined;
     const prize1st =
       req.body.prize1st !== undefined
         ? Math.max(0, Math.floor(Number(req.body.prize1st)) || 0)
@@ -1914,11 +2239,21 @@ app.patch('/api/admin/tournaments/:id', requireAuth, requireAdmin, (req: Authent
       req.body.prize3rd !== undefined
         ? Math.max(0, Math.floor(Number(req.body.prize3rd)) || 0)
         : Number(existing.prize_3rd ?? 0);
+    const prize4th =
+      req.body.prize4th !== undefined
+        ? Math.max(0, Math.floor(Number(req.body.prize4th)) || 0)
+        : Number(existing.prize_4th ?? 0);
+    const prize5th =
+      req.body.prize5th !== undefined
+        ? Math.max(0, Math.floor(Number(req.body.prize5th)) || 0)
+        : Number(existing.prize_5th ?? 0);
     const basePool =
       req.body.prizePool !== undefined
         ? Math.max(0, Math.floor(Number(req.body.prizePool)) || 0)
         : Number(existing.prize_pool ?? 0);
-    const prizePool = hasSplitPatch ? Math.max(basePool, prize1st + prize2nd + prize3rd) : basePool;
+    const prizePool = hasSplitPatch
+      ? Math.max(basePool, prize1st + prize2nd + prize3rd + prize4th + prize5th)
+      : basePool;
 
     const maxSlots =
       req.body.maxSlots !== undefined
@@ -1983,7 +2318,7 @@ app.patch('/api/admin/tournaments/:id', requireAuth, requireAdmin, (req: Authent
 
     db.prepare(
       `UPDATE tournaments
-       SET title = ?, game_name = ?, mode = ?, entry_fee = ?, prize_pool = ?, prize_1st = ?, prize_2nd = ?, prize_3rd = ?, max_slots = ?,
+       SET title = ?, game_name = ?, mode = ?, entry_fee = ?, prize_pool = ?, prize_1st = ?, prize_2nd = ?, prize_3rd = ?, prize_4th = ?, prize_5th = ?, max_slots = ?,
            match_time = ?, end_time = ?, status = ?, banner_url = ?, rules = ?, room_id = ?, room_pass = ?
        WHERE id = ?`
     ).run(
@@ -1995,6 +2330,8 @@ app.patch('/api/admin/tournaments/:id', requireAuth, requireAdmin, (req: Authent
       prize1st,
       prize2nd,
       prize3rd,
+      prize4th,
+      prize5th,
       maxSlots,
       matchTime,
       endTime,
@@ -2232,6 +2569,214 @@ app.delete(
   }
 );
 
+function saveTournamentWinners(
+  tournamentId: number,
+  adminUserId: number,
+  winnersInput: Array<{ userId?: unknown; placement?: unknown; prizeAmount?: unknown }>,
+  allowReplace: boolean
+): { status: number; error?: string } {
+  return db.transaction(() => {
+    const t = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as
+      | { id: number; title: string; status: string }
+      | undefined;
+    if (!t) return { status: 404, error: 'Tournament not found.' };
+    if (t.status === 'cancelled') {
+      return { status: 400, error: 'Cannot declare winners for a cancelled tournament.' };
+    }
+
+    const previousWinners = db
+      .prepare('SELECT id, user_id, placement, prize_amount FROM winners WHERE tournament_id = ?')
+      .all(tournamentId) as Array<{
+      id: number;
+      user_id: number;
+      placement: number;
+      prize_amount: number;
+    }>;
+
+    if (previousWinners.length > 0 && !allowReplace) {
+      return { status: 409, error: 'Winners have already been declared and paid for this tournament.' };
+    }
+
+    const selectableUsersRow = db
+      .prepare('SELECT COUNT(*) as count FROM users WHERE is_blocked = 0')
+      .get() as { count: number };
+    const requiredCount = Math.min(5, Number(selectableUsersRow?.count || 0));
+    if (requiredCount >= 5 && winnersInput.length !== 5) {
+      return {
+        status: 400,
+        error: 'Please select exactly 5 distinct winners (1st, 2nd, 3rd, 4th, and 5th Winner).',
+      };
+    }
+
+    const seenUsers = new Set<number>();
+    const seenPlacements = new Set<number>();
+    const rankLabels: Record<number, string> = {
+      1: '1st Place Winner',
+      2: '2nd Place Winner',
+      3: '3rd Place Winner',
+      4: '4th Place Winner',
+      5: '5th Place Winner',
+    };
+
+    const sortedEntries = [...winnersInput].sort(
+      (a, b) => Number(a.placement) - Number(b.placement)
+    );
+
+    // Pre-validate all entries before reversing previous winners
+    const parsedEntries: Array<{
+      uid: number;
+      placement: number;
+      prizeAmount: number;
+      username: string;
+      playerId: string;
+      walletBalance: number;
+    }> = [];
+
+    for (const entry of sortedEntries) {
+      const uid = Number(entry.userId);
+      const placement = Number(entry.placement);
+      const prizeAmount = Math.floor(Number(entry.prizeAmount));
+
+      if (
+        !Number.isInteger(uid) ||
+        uid <= 0 ||
+        !Number.isInteger(placement) ||
+        placement < 1 ||
+        placement > 5 ||
+        !Number.isFinite(prizeAmount) ||
+        prizeAmount < 0 ||
+        prizeAmount > 5000000
+      ) {
+        return {
+          status: 400,
+          error: 'Invalid winner entry or prize amount (must be 1st through 5th place).',
+        };
+      }
+      if (seenUsers.has(uid)) {
+        return {
+          status: 400,
+          error: 'The same player cannot win more than one position in the same tournament.',
+        };
+      }
+      if (seenPlacements.has(placement)) {
+        return { status: 400, error: `Duplicate placement #${placement} selected.` };
+      }
+      seenUsers.add(uid);
+      seenPlacements.add(placement);
+
+      const targetUser = db
+        .prepare('SELECT id, username, player_id, wallet_balance FROM users WHERE id = ?')
+        .get(uid) as
+        | { id: number; username: string; player_id: string; wallet_balance: number }
+        | undefined;
+      if (!targetUser) {
+        return { status: 404, error: 'Selected winner player account was not found.' };
+      }
+      parsedEntries.push({
+        uid,
+        placement,
+        prizeAmount,
+        username: targetUser.username,
+        playerId: targetUser.player_id,
+        walletBalance: targetUser.wallet_balance,
+      });
+    }
+
+    // If admin is editing previously declared winners, safely reverse old payouts & wins
+    if (allowReplace && previousWinners.length > 0) {
+      for (const prev of previousWinners) {
+        if (prev.placement === 1) {
+          db.prepare('UPDATE users SET wins = MAX(0, wins - 1) WHERE id = ?').run(prev.user_id);
+        }
+        if (prev.prize_amount > 0) {
+          const prevWallet = db
+            .prepare('SELECT available_balance, total_won FROM wallet_accounts WHERE user_id = ?')
+            .get(prev.user_id) as { available_balance: number; total_won: number } | undefined;
+          if (prevWallet) {
+            const reversedBal = Math.max(0, prevWallet.available_balance - prev.prize_amount);
+            const reversedWon = Math.max(0, prevWallet.total_won - prev.prize_amount);
+            db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(reversedBal, prev.user_id);
+            db.prepare(
+              "UPDATE wallet_accounts SET available_balance = ?, total_won = ?, updated_at = datetime('now') WHERE user_id = ?"
+            ).run(reversedBal, reversedWon, prev.user_id);
+            db.prepare(
+              `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
+               VALUES (?, ?, 'admin_adjustment', ?, 'debit', ?, 'completed', ?, ?)`
+            ).run(
+              generateTxCode(),
+              prev.user_id,
+              prev.prize_amount,
+              reversedBal,
+              `TOUR-${tournamentId}`,
+              `Winner update reversal (${rankLabels[prev.placement] || `#${prev.placement}`}) — ${t.title}`
+            );
+          }
+        }
+      }
+      db.prepare('DELETE FROM winners WHERE tournament_id = ?').run(tournamentId);
+    }
+
+    for (const item of parsedEntries) {
+      // Ensure winner appears in tournament roster if added directly by admin
+      const isReg = db
+        .prepare('SELECT id FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?')
+        .get(tournamentId, item.uid);
+      if (!isReg) {
+        const slotRow = db
+          .prepare('SELECT COALESCE(MAX(slot_number), 0) + 1 as nextSlot FROM tournament_registrations WHERE tournament_id = ?')
+          .get(tournamentId) as { nextSlot: number };
+        db.prepare(
+          `INSERT INTO tournament_registrations (tournament_id, user_id, in_game_name, in_game_id, slot_number)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(tournamentId, item.uid, item.username, item.playerId, slotRow.nextSlot);
+        db.prepare('UPDATE tournaments SET filled_slots = filled_slots + 1 WHERE id = ?').run(tournamentId);
+      }
+
+      db.prepare(
+        `INSERT INTO winners (tournament_id, user_id, placement, prize_amount, declared_by)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(tournamentId, item.uid, item.placement, item.prizeAmount, adminUserId);
+
+      if (item.placement === 1) {
+        db.prepare('UPDATE users SET wins = wins + 1 WHERE id = ?').run(item.uid);
+      }
+
+      db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
+        item.uid,
+        item.walletBalance
+      );
+
+      if (item.prizeAmount > 0) {
+        const wallet = db
+          .prepare('SELECT available_balance, total_won FROM wallet_accounts WHERE user_id = ?')
+          .get(item.uid) as { available_balance: number; total_won: number };
+        const nextBal = wallet.available_balance + item.prizeAmount;
+        const nextWon = wallet.total_won + item.prizeAmount;
+
+        db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(nextBal, item.uid);
+        db.prepare(
+          "UPDATE wallet_accounts SET available_balance = ?, total_won = ?, updated_at = datetime('now') WHERE user_id = ?"
+        ).run(nextBal, nextWon, item.uid);
+
+        db.prepare(
+          `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
+           VALUES (?, ?, 'prize_win', ?, 'credit', ?, 'completed', ?, ?)`
+        ).run(
+          generateTxCode(),
+          item.uid,
+          item.prizeAmount,
+          nextBal,
+          `TOUR-${tournamentId}`,
+          `${rankLabels[item.placement] || `#${item.placement} Winner`} — ${t.title}`
+        );
+      }
+    }
+
+    db.prepare("UPDATE tournaments SET status = 'completed' WHERE id = ?").run(tournamentId);
+    return { status: 200 };
+  }).immediate();
+}
+
 app.post('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
   try {
     const tournamentId = Number(req.params.id);
@@ -2241,135 +2786,13 @@ app.post('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, (req: 
     }
 
     const winnersInput = Array.isArray(req.body.winners) ? req.body.winners : [];
-    if (winnersInput.length === 0 || winnersInput.length > 3) {
-      res.status(400).json({ error: 'Select up to 3 distinct winners (1st, 2nd, and 3rd Place).' });
+    if (winnersInput.length === 0 || winnersInput.length > 5) {
+      res.status(400).json({ error: 'Select 5 distinct winners (1st, 2nd, 3rd, 4th, and 5th Place).' });
       return;
     }
 
-    const result = db.transaction(() => {
-      const t = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as
-        | { id: number; title: string; status: string }
-        | undefined;
-      if (!t) return { status: 404, error: 'Tournament not found.' };
-      if (t.status === 'cancelled') {
-        return { status: 400, error: 'Cannot declare winners for a cancelled tournament.' };
-      }
-
-      const existingWinners = db
-        .prepare('SELECT COUNT(*) as count FROM winners WHERE tournament_id = ?')
-        .get(tournamentId) as { count: number };
-      if (existingWinners.count > 0) {
-        return { status: 409, error: 'Winners have already been declared and paid for this tournament.' };
-      }
-
-      const seenUsers = new Set<number>();
-      const seenPlacements = new Set<number>();
-      const rankLabels: Record<number, string> = {
-        1: '1st Place Winner',
-        2: '2nd Place Winner',
-        3: '3rd Place Winner',
-      };
-
-      const sortedEntries = [...winnersInput].sort(
-        (a, b) => Number(a.placement) - Number(b.placement)
-      );
-
-      for (const entry of sortedEntries) {
-        const uid = Number(entry.userId);
-        const placement = Number(entry.placement);
-        const prizeAmount = Math.floor(Number(entry.prizeAmount));
-
-        if (
-          !Number.isInteger(uid) ||
-          uid <= 0 ||
-          !Number.isInteger(placement) ||
-          placement < 1 ||
-          placement > 3 ||
-          !Number.isFinite(prizeAmount) ||
-          prizeAmount < 0 ||
-          prizeAmount > 5000000
-        ) {
-          return { status: 400, error: 'Invalid winner entry or prize amount (must be 1st, 2nd, or 3rd place).' };
-        }
-        if (seenUsers.has(uid)) {
-          return {
-            status: 400,
-            error: 'The same player cannot win more than one position in the same tournament.',
-          };
-        }
-        if (seenPlacements.has(placement)) {
-          return { status: 400, error: `Duplicate placement #${placement} selected.` };
-        }
-        seenUsers.add(uid);
-        seenPlacements.add(placement);
-
-        const targetUser = db
-          .prepare('SELECT id, username, player_id, wallet_balance FROM users WHERE id = ?')
-          .get(uid) as { id: number; username: string; player_id: string; wallet_balance: number } | undefined;
-        if (!targetUser) {
-          return { status: 404, error: 'Selected winner player account was not found.' };
-        }
-
-        // Ensure winner appears in tournament roster if added directly by admin
-        const isReg = db
-          .prepare('SELECT id FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?')
-          .get(tournamentId, uid);
-        if (!isReg) {
-          const slotRow = db
-            .prepare('SELECT COALESCE(MAX(slot_number), 0) + 1 as nextSlot FROM tournament_registrations WHERE tournament_id = ?')
-            .get(tournamentId) as { nextSlot: number };
-          db.prepare(
-            `INSERT INTO tournament_registrations (tournament_id, user_id, in_game_name, in_game_id, slot_number)
-             VALUES (?, ?, ?, ?, ?)`
-          ).run(tournamentId, uid, targetUser.username, targetUser.player_id, slotRow.nextSlot);
-          db.prepare('UPDATE tournaments SET filled_slots = filled_slots + 1 WHERE id = ?').run(tournamentId);
-        }
-
-        db.prepare(
-          `INSERT INTO winners (tournament_id, user_id, placement, prize_amount, declared_by)
-           VALUES (?, ?, ?, ?, ?)`
-        ).run(tournamentId, uid, placement, prizeAmount, req.user!.id);
-
-        if (placement === 1) {
-          db.prepare('UPDATE users SET wins = wins + 1 WHERE id = ?').run(uid);
-        }
-
-        db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
-          uid,
-          targetUser.wallet_balance
-        );
-
-        if (prizeAmount > 0) {
-          const wallet = db
-            .prepare('SELECT available_balance, total_won FROM wallet_accounts WHERE user_id = ?')
-            .get(uid) as { available_balance: number; total_won: number };
-          const nextBal = wallet.available_balance + prizeAmount;
-          const nextWon = wallet.total_won + prizeAmount;
-
-          db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(nextBal, uid);
-          db.prepare(
-            "UPDATE wallet_accounts SET available_balance = ?, total_won = ?, updated_at = datetime('now') WHERE user_id = ?"
-          ).run(nextBal, nextWon, uid);
-
-          db.prepare(
-            `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
-             VALUES (?, ?, 'prize_win', ?, 'credit', ?, 'completed', ?, ?)`
-          ).run(
-            generateTxCode(),
-            uid,
-            prizeAmount,
-            nextBal,
-            `TOUR-${tournamentId}`,
-            `${rankLabels[placement] || `#${placement} Winner`} — ${t.title}`
-          );
-        }
-      }
-
-      db.prepare("UPDATE tournaments SET status = 'completed' WHERE id = ?").run(tournamentId);
-      return { status: 200 };
-    }).immediate();
-
-    if ('error' in result) {
+    const result = saveTournamentWinners(tournamentId, req.user!.id, winnersInput, false);
+    if ('error' in result && result.error) {
       res.status(result.status).json({ error: result.error });
       return;
     }
@@ -2380,6 +2803,35 @@ app.post('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, (req: 
   } catch (err) {
     console.error('Declare winners error:', err);
     res.status(500).json({ error: 'Failed to declare winners.' });
+  }
+});
+
+app.put('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const tournamentId = Number(req.params.id);
+    if (!Number.isInteger(tournamentId) || tournamentId <= 0) {
+      res.status(400).json({ error: 'Invalid tournament ID.' });
+      return;
+    }
+
+    const winnersInput = Array.isArray(req.body.winners) ? req.body.winners : [];
+    if (winnersInput.length === 0 || winnersInput.length > 5) {
+      res.status(400).json({ error: 'Select 5 distinct winners (1st, 2nd, 3rd, 4th, and 5th Place).' });
+      return;
+    }
+
+    const result = saveTournamentWinners(tournamentId, req.user!.id, winnersInput, true);
+    if ('error' in result && result.error) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+
+    recalculateAllUserPoints();
+    const updated = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as Record<string, unknown>;
+    res.json({ tournament: enrichTournament(updated, req.user!) });
+  } catch (err) {
+    console.error('Update winners error:', err);
+    res.status(500).json({ error: 'Failed to update winners.' });
   }
 });
 

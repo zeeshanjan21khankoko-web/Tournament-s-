@@ -23,6 +23,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [identifier, setIdentifier] = useState('');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [passcode, setPasscode] = useState('');
   const [avatarUrl, setAvatarUrl] = useState(AVATAR_PRESETS[0].url);
@@ -64,7 +65,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
       } else if (mode === 'register') {
         const res = await apiRequest<{ token: string; user: UserProfile }>('/api/auth/register', {
           method: 'POST',
-          body: { username, email, password, avatarUrl },
+          body: { username, email, phone: phone.trim(), password, avatarUrl },
         });
         onSuccess(res.token, res.user);
       } else {
@@ -82,7 +83,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
   };
 
   return (
-    <div className="w-full max-w-md mx-auto bg-[#091D12] border border-[#22C55E]/35 rounded-2xl p-6 shadow-2xl">
+    <div className="w-full max-w-md mx-auto bg-[#131A29] border border-white/[0.12] rounded-2xl p-6 shadow-2xl">
       <div className="flex items-start justify-between gap-4 mb-5">
         <div>
           <h2 className="font-display text-xl font-bold text-white tracking-tight">
@@ -92,7 +93,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 ? 'Create Player Account'
                 : 'Claim Administrator Access'}
           </h2>
-          <p className="text-sm text-emerald-200/75 mt-1">
+          <p className="text-sm text-slate-400 mt-1">
             {mode === 'login'
               ? 'Access your wallet, active rooms, and Free Fire stats.'
               : mode === 'register'
@@ -107,7 +108,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             type="button"
             onClick={onClose}
             aria-label="Close sign in dialog"
-            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-emerald-200/75 hover:text-white hover:bg-[#22C55E]/15 transition-colors"
+            className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -115,7 +116,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
       </div>
 
       {/* Mode Switcher */}
-      <div className="grid grid-cols-2 sm:flex gap-1 p-1 bg-[#05130B] border border-[#22C55E]/25 rounded-xl mb-5">
+      <div className="grid grid-cols-2 sm:flex gap-1 p-1 bg-[#0D1320] border border-white/[0.08] rounded-xl mb-5">
         <button
           type="button"
           onClick={() => {
@@ -124,8 +125,8 @@ export const AuthView: React.FC<AuthViewProps> = ({
           }}
           className={`flex-1 min-h-[40px] px-3 py-2 text-xs font-bold rounded-lg transition-colors whitespace-nowrap ${
             mode === 'login'
-              ? 'bg-gradient-to-r from-[#22C55E] to-[#FACC15] text-[#04110A]'
-              : 'text-emerald-100/80 hover:text-white'
+              ? 'bg-[#FACC15] text-[#0A0E17]'
+              : 'text-slate-400 hover:text-white'
           }`}
         >
           Sign In
@@ -138,8 +139,8 @@ export const AuthView: React.FC<AuthViewProps> = ({
           }}
           className={`flex-1 min-h-[40px] px-3 py-2 text-xs font-bold rounded-lg transition-colors whitespace-nowrap ${
             mode === 'register'
-              ? 'bg-gradient-to-r from-[#22C55E] to-[#FACC15] text-[#04110A]'
-              : 'text-emerald-100/80 hover:text-white'
+              ? 'bg-[#FACC15] text-[#0A0E17]'
+              : 'text-slate-400 hover:text-white'
           }`}
         >
           Sign Up
@@ -153,8 +154,8 @@ export const AuthView: React.FC<AuthViewProps> = ({
             }}
             className={`col-span-2 sm:col-span-1 flex-1 min-h-[40px] px-3 py-2 text-xs font-bold rounded-lg transition-colors whitespace-nowrap ${
               mode === 'admin'
-                ? 'bg-[#FACC15] text-[#04110A]'
-                : 'text-emerald-100/80 hover:text-white'
+                ? 'bg-[#FACC15] text-[#0A0E17]'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             Admin Setup
@@ -171,7 +172,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
       <form onSubmit={handleSubmit} className="space-y-4">
         {mode === 'login' ? (
           <div>
-            <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
+            <label className="block text-xs font-medium text-slate-300 mb-1.5">
               Username or Email
             </label>
             <input
@@ -180,14 +181,14 @@ export const AuthView: React.FC<AuthViewProps> = ({
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
               placeholder="e.g. shadow_pk or player@email.com"
-              className="w-full min-h-[44px] px-3.5 py-2.5 bg-[#05130B] border border-[#22C55E]/25 rounded-xl text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
+              className="w-full min-h-[44px] px-3.5 py-2.5 bg-[#0D1320] border border-white/[0.1] rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#FACC15]"
             />
           </div>
         ) : (
           <>
             {mode === 'register' && (
               <div>
-                <label className="block text-xs font-medium text-emerald-100/85 mb-2">
+                <label className="block text-xs font-medium text-slate-300 mb-2">
                   Profile Picture
                 </label>
                 <div className="flex items-center gap-3">
@@ -195,7 +196,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                     src={avatarUrl}
                     alt="Selected avatar"
                     referrerPolicy="no-referrer"
-                    className="w-14 h-14 rounded-xl object-cover border border-[#22C55E]/35 bg-[#05130B] shrink-0"
+                    className="w-14 h-14 rounded-full object-cover border-2 border-[#FACC15]/70 bg-[#0D1320] shrink-0"
                   />
                   <div className="flex flex-wrap gap-2 items-center">
                     {AVATAR_PRESETS.map((preset) => (
@@ -204,10 +205,10 @@ export const AuthView: React.FC<AuthViewProps> = ({
                         type="button"
                         onClick={() => setAvatarUrl(preset.url)}
                         title={preset.label}
-                        className={`w-10 h-10 rounded-lg overflow-hidden border transition-all ${
+                        className={`w-10 h-10 rounded-full overflow-hidden border transition-all ${
                           avatarUrl === preset.url
-                            ? 'border-[#FACC15] ring-2 ring-[#FACC15]/35'
-                            : 'border-[#22C55E]/25 opacity-75 hover:opacity-100'
+                            ? 'border-[#FACC15] ring-2 ring-[#FACC15]/40'
+                            : 'border-white/[0.1] opacity-75 hover:opacity-100'
                         }`}
                       >
                         <img
@@ -218,7 +219,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                         />
                       </button>
                     ))}
-                    <label className="min-h-[40px] px-3 py-2 rounded-lg bg-[#05130B] border border-[#22C55E]/25 hover:border-[#FACC15]/60 text-xs font-medium text-emerald-50 cursor-pointer inline-flex items-center gap-1.5">
+                    <label className="min-h-[40px] px-3 py-2 rounded-xl bg-[#0D1320] border border-white/[0.1] hover:border-[#FACC15]/60 text-xs font-medium text-slate-200 cursor-pointer inline-flex items-center gap-1.5">
                       <Upload className="w-3.5 h-3.5 text-[#FACC15]" />
                       <span>Upload</span>
                       <input
@@ -234,7 +235,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             )}
 
             <div>
-              <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
+              <label className="block text-xs font-medium text-slate-300 mb-1.5">
                 Gamer Username
               </label>
               <input
@@ -245,12 +246,12 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="e.g. KellyRunner_PK"
-                className="w-full min-h-[44px] px-3.5 py-2.5 bg-[#05130B] border border-[#22C55E]/25 rounded-xl text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
+                className="w-full min-h-[44px] px-3.5 py-2.5 bg-[#0D1320] border border-white/[0.1] rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#FACC15]"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
+              <label className="block text-xs font-medium text-slate-300 mb-1.5">
                 Email Address
               </label>
               <input
@@ -259,24 +260,39 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="player@domain.com"
-                className="w-full min-h-[44px] px-3.5 py-2.5 bg-[#05130B] border border-[#22C55E]/25 rounded-xl text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
+                className="w-full min-h-[44px] px-3.5 py-2.5 bg-[#0D1320] border border-white/[0.1] rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#FACC15]"
               />
             </div>
 
+            {mode === 'register' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  Phone Number (Optional)
+                </label>
+                <input
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="e.g. 03001234567"
+                  className="w-full min-h-[44px] px-3.5 py-2.5 bg-[#0D1320] border border-white/[0.1] rounded-xl font-mono text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#FACC15]"
+                />
+              </div>
+            )}
+
             {mode === 'admin' && bootstrap.passcodeConfigured && (
               <div>
-                <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
+                <label className="block text-xs font-medium text-slate-300 mb-1.5">
                   Server Admin Passcode
                 </label>
                 <div className="relative">
-                  <KeyRound className="w-4 h-4 text-emerald-300/70 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="password"
                     required
                     value={passcode}
                     onChange={(e) => setPasscode(e.target.value)}
                     placeholder="Enter configured ADMIN_PASSCODE"
-                    className="w-full min-h-[44px] pl-10 pr-3.5 py-2.5 bg-[#05130B] border border-[#22C55E]/25 rounded-xl text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
+                    className="w-full min-h-[44px] pl-10 pr-3.5 py-2.5 bg-[#0D1320] border border-white/[0.1] rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#FACC15]"
                   />
                 </div>
               </div>
@@ -285,7 +301,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
         )}
 
         <div>
-          <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
+          <label className="block text-xs font-medium text-slate-300 mb-1.5">
             Password
           </label>
           <div className="relative">
@@ -296,13 +312,13 @@ export const AuthView: React.FC<AuthViewProps> = ({
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Minimum 6 characters"
-              className="w-full min-h-[44px] pl-3.5 pr-11 py-2.5 bg-[#05130B] border border-[#22C55E]/25 rounded-xl text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
+              className="w-full min-h-[44px] pl-3.5 pr-11 py-2.5 bg-[#0D1320] border border-white/[0.1] rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#FACC15]"
             />
             <button
               type="button"
               onClick={() => setShowPassword((prev) => !prev)}
               aria-label={showPassword ? 'Hide password' : 'Show password'}
-              className="absolute right-1 top-1/2 -translate-y-1/2 min-h-[40px] min-w-[40px] flex items-center justify-center text-emerald-200/70 hover:text-white"
+              className="absolute right-1 top-1/2 -translate-y-1/2 min-h-[40px] min-w-[40px] flex items-center justify-center text-slate-400 hover:text-white"
             >
               {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
@@ -312,11 +328,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
         <button
           type="submit"
           disabled={loading}
-          className={`w-full min-h-[46px] px-4 py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.99] disabled:opacity-60 ${
-            mode === 'admin'
-              ? 'bg-[#FACC15] hover:bg-[#FDE047] text-[#04110A]'
-              : 'ff-btn-ember'
-          }`}
+          className="ff-btn-ember w-full min-h-[46px] px-4 py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.99] disabled:opacity-60"
         >
           {mode === 'login' ? (
             <LogIn className="w-4 h-4" />
