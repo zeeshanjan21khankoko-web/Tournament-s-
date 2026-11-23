@@ -1,12 +1,15 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowDownLeft,
   ArrowUpRight,
+  Building2,
   Check,
   CheckCircle2,
   Clock,
   Copy,
+  ShieldCheck,
   Smartphone,
+  Trophy,
   Upload,
   Wallet,
   XCircle,
@@ -18,8 +21,11 @@ import type {
   PaymentChannel,
   TransactionRecord,
   WalletAccount,
+  WinningRecord,
   WithdrawalRecord,
 } from '../types';
+
+export type WalletSubTab = 'withdraw' | 'winnings' | 'deposit' | 'history';
 
 interface WalletViewProps {
   token: string;
@@ -27,7 +33,9 @@ interface WalletViewProps {
   deposits: DepositRecord[];
   withdrawals: WithdrawalRecord[];
   transactions: TransactionRecord[];
+  winnings: WinningRecord[];
   paymentChannels: PaymentChannel[];
+  initialTab?: WalletSubTab;
   onRefresh: () => Promise<void>;
 }
 
@@ -37,12 +45,18 @@ export const WalletView: React.FC<WalletViewProps> = ({
   deposits,
   withdrawals,
   transactions,
+  winnings,
   paymentChannels,
+  initialTab = 'withdraw',
   onRefresh,
 }) => {
-  const [subTab, setSubTab] = useState<'deposit' | 'withdraw' | 'history'>('deposit');
+  const [subTab, setSubTab] = useState<WalletSubTab>(initialTab);
 
-  // Deposit state
+  useEffect(() => {
+    setSubTab(initialTab);
+  }, [initialTab]);
+
+  // Deposit state (JazzCash / Easypaisa only)
   const [depMethod, setDepMethod] = useState<'jazzcash' | 'easypaisa'>(() =>
     getPreferredPayMethod()
   );
@@ -54,8 +68,9 @@ export const WalletView: React.FC<WalletViewProps> = ({
   const [depError, setDepError] = useState('');
   const [depSuccess, setDepSuccess] = useState('');
 
-  // Withdraw state
-  const [wdMethod, setWdMethod] = useState<'jazzcash' | 'easypaisa'>('jazzcash');
+  // Withdraw state (Easypaisa / JazzCash / Bank Account)
+  const [wdMethod, setWdMethod] = useState<'easypaisa' | 'jazzcash' | 'bank_account'>('easypaisa');
+  const [bankName, setBankName] = useState('');
   const [wdAmount, setWdAmount] = useState('');
   const [accountTitle, setAccountTitle] = useState('');
   const [accountNumber, setAccountNumber] = useState('');
@@ -68,9 +83,11 @@ export const WalletView: React.FC<WalletViewProps> = ({
   const activeChannel =
     paymentChannels.find((c) => c.id === depMethod) || paymentChannels[0];
 
-  const availableBalance = wallet?.available_balance ?? 0;
+  const totalBalance = wallet?.available_balance ?? 0;
+  const pendingWithdrawal = wallet?.pending_withdrawal ?? 0;
+  const spendableBalance = Math.max(0, totalBalance - pendingWithdrawal);
   const parsedWdAmount = Number(wdAmount) || 0;
-  const exceedsBalance = parsedWdAmount > availableBalance;
+  const exceedsBalance = parsedWdAmount > spendableBalance;
 
   const handleCopy = (value: string, key: string) => {
     navigator.clipboard?.writeText(value).catch(() => {});
@@ -124,24 +141,29 @@ export const WalletView: React.FC<WalletViewProps> = ({
     e.preventDefault();
     setWdError('');
     setWdSuccess('');
-    if (parsedWdAmount > availableBalance) {
-      setWdError('Withdrawal amount exceeds your available balance.');
+    if (parsedWdAmount > spendableBalance) {
+      setWdError('Withdrawal amount exceeds your unreserved available balance.');
       return;
     }
     setWdLoading(true);
     try {
-      await apiRequest('/api/wallet/withdraw', {
+      const res = await apiRequest<{ message?: string }>('/api/wallet/withdraw', {
         method: 'POST',
         token,
         body: {
           amount: Math.floor(Number(wdAmount)),
           method: wdMethod,
-          accountTitle,
-          accountNumber,
+          bankName: wdMethod === 'bank_account' ? bankName.trim() : '',
+          accountTitle: accountTitle.trim(),
+          accountNumber: accountNumber.trim(),
         },
       });
-      setWdSuccess('Withdrawal request submitted. Funds are reserved pending admin payout.');
+      setWdSuccess(
+        res.message ||
+          'Withdrawal request sent to admin. Your wallet will be deducted once payment is confirmed as Paid.'
+      );
       setWdAmount('');
+      setBankName('');
       setAccountTitle('');
       setAccountNumber('');
       await onRefresh();
@@ -152,59 +174,76 @@ export const WalletView: React.FC<WalletViewProps> = ({
     }
   };
 
-  const renderStatus = (status: 'pending' | 'approved' | 'rejected' | 'completed') => {
-    if (status === 'approved' || status === 'completed') {
+  const renderStatus = (
+    status: 'pending' | 'approved' | 'paid' | 'rejected' | 'completed'
+  ) => {
+    if (status === 'paid' || status === 'completed') {
       return (
-        <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-400">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#22C55E]/15 text-xs font-semibold text-[#4ADE80]">
           <CheckCircle2 className="w-3.5 h-3.5" />
-          <span className="capitalize">{status}</span>
+          <span className="capitalize">{status === 'paid' ? 'Paid' : 'Completed'}</span>
+        </span>
+      );
+    }
+    if (status === 'approved') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-sky-500/15 text-xs font-semibold text-sky-300">
+          <ShieldCheck className="w-3.5 h-3.5" />
+          <span>Approved (Processing Payout)</span>
         </span>
       );
     }
     if (status === 'rejected') {
       return (
-        <span className="inline-flex items-center gap-1 text-xs font-medium text-rose-400">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500/15 text-xs font-semibold text-rose-400">
           <XCircle className="w-3.5 h-3.5" />
           <span>Rejected</span>
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-400">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#FACC15]/15 text-xs font-semibold text-[#FACC15]">
         <Clock className="w-3.5 h-3.5" />
         <span>Pending</span>
       </span>
     );
   };
 
+  const formatMethodLabel = (method: WithdrawalRecord['method'], bName?: string) => {
+    if (method === 'bank_account') return bName ? `${bName} (Bank)` : 'Bank Account';
+    if (method === 'easypaisa') return 'Easypaisa';
+    return 'JazzCash';
+  };
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-bold text-white">
-            Wallet &amp; PKR Payments
+            Winner Wallet &amp; Prize Withdrawals
           </h1>
-          <p className="text-sm text-slate-400">
-            Deposit via JazzCash or Easypaisa and withdraw winnings securely.
+          <p className="text-sm text-emerald-200/75">
+            Track tournament prize winnings, request payouts via Easypaisa, JazzCash, or Bank Account, and inspect every transaction.
           </p>
         </div>
 
-        <div className="flex items-center gap-1 p-1 bg-[#11131E] border border-white/[0.08] rounded-xl">
+        <div className="flex items-center gap-1 p-1 bg-[#091D12] border border-[#22C55E]/25 rounded-xl overflow-x-auto">
           {(
             [
+              { id: 'withdraw', label: 'Withdraw Money' },
+              { id: 'winnings', label: `Winnings (${winnings.length})` },
               { id: 'deposit', label: 'Deposit' },
-              { id: 'withdraw', label: 'Withdraw' },
-              { id: 'history', label: 'Ledger' },
+              { id: 'history', label: 'Transactions' },
             ] as const
           ).map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => setSubTab(t.id)}
-              className={`min-h-[44px] px-4 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+              className={`min-h-[42px] px-3.5 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-colors ${
                 subTab === t.id
-                  ? 'bg-[#00D4FF] text-[#07080D]'
-                  : 'text-slate-300 hover:text-white'
+                  ? 'bg-gradient-to-r from-[#22C55E] to-[#FACC15] text-[#04110A]'
+                  : 'text-emerald-100/80 hover:text-white'
               }`}
             >
               {t.label}
@@ -215,44 +254,343 @@ export const WalletView: React.FC<WalletViewProps> = ({
 
       {/* Balance Summary Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-[#11131E] border border-[#00D4FF]/30 rounded-2xl p-4 sm:p-5">
-          <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
-            <span>Available Balance</span>
-            <Wallet className="w-4 h-4 text-[#00D4FF]" />
+        <div className="bg-[#091D12] border border-[#FACC15]/40 rounded-2xl p-4 sm:p-5">
+          <div className="flex items-center justify-between text-xs text-emerald-200/75 mb-1.5">
+            <span>Total Wallet Balance</span>
+            <Wallet className="w-4 h-4 text-[#FACC15]" />
           </div>
           <div className="font-mono text-xl sm:text-2xl font-bold text-white tabular-nums">
-            {formatPKR(availableBalance)}
+            {formatPKR(totalBalance)}
           </div>
+          {pendingWithdrawal > 0 && (
+            <div className="text-[11px] text-emerald-200/75 mt-1 font-mono">
+              Withdrawable: {formatPKR(spendableBalance)}
+            </div>
+          )}
         </div>
-        <div className="bg-[#11131E] border border-white/[0.08] rounded-2xl p-4 sm:p-5">
-          <div className="text-xs text-slate-400 mb-1.5">Pending Withdrawal</div>
-          <div className="font-mono text-xl sm:text-2xl font-bold text-amber-400 tabular-nums">
-            {formatPKR(wallet?.pending_withdrawal)}
+
+        <div className="bg-[#091D12] border border-[#22C55E]/25 rounded-2xl p-4 sm:p-5">
+          <div className="flex items-center justify-between text-xs text-emerald-200/75 mb-1.5">
+            <span>Total Prize Winnings</span>
+            <Trophy className="w-4 h-4 text-[#FACC15]" />
           </div>
-        </div>
-        <div className="bg-[#11131E] border border-white/[0.08] rounded-2xl p-4 sm:p-5">
-          <div className="text-xs text-slate-400 mb-1.5">Total Deposited</div>
-          <div className="font-mono text-xl sm:text-2xl font-bold text-emerald-400 tabular-nums">
-            {formatPKR(wallet?.total_deposited)}
-          </div>
-        </div>
-        <div className="bg-[#11131E] border border-white/[0.08] rounded-2xl p-4 sm:p-5">
-          <div className="text-xs text-slate-400 mb-1.5">Total Prize Winnings</div>
-          <div className="font-mono text-xl sm:text-2xl font-bold text-[#8B5CF6] tabular-nums">
+          <div className="font-mono text-xl sm:text-2xl font-bold text-[#FACC15] tabular-nums">
             {formatPKR(wallet?.total_won)}
+          </div>
+        </div>
+
+        <div className="bg-[#091D12] border border-[#22C55E]/25 rounded-2xl p-4 sm:p-5">
+          <div className="text-xs text-emerald-200/75 mb-1.5">Pending Payouts</div>
+          <div className="font-mono text-xl sm:text-2xl font-bold text-[#FDE047] tabular-nums">
+            {formatPKR(pendingWithdrawal)}
+          </div>
+        </div>
+
+        <div className="bg-[#091D12] border border-[#22C55E]/25 rounded-2xl p-4 sm:p-5">
+          <div className="text-xs text-emerald-200/75 mb-1.5">Total Paid Withdrawals</div>
+          <div className="font-mono text-xl sm:text-2xl font-bold text-[#4ADE80] tabular-nums">
+            {formatPKR(wallet?.total_withdrawn)}
           </div>
         </div>
       </div>
 
+      {/* WITHDRAW MONEY TAB */}
+      {subTab === 'withdraw' && (
+        <div className="grid lg:grid-cols-12 gap-6">
+          <div className="lg:col-span-7 bg-[#091D12] border border-[#22C55E]/25 rounded-2xl p-5 sm:p-6">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+              <h2 className="font-display text-lg font-bold text-white">
+                Withdraw Prize Money
+              </h2>
+              <span className="text-xs font-mono text-[#FACC15]">
+                Available: {formatPKR(spendableBalance)}
+              </span>
+            </div>
+            <p className="text-xs text-emerald-200/75 mb-5">
+              Minimum PKR 200. Requests stay Pending/Approved until an admin confirms payment and deducts the amount as Paid.
+            </p>
+
+            {wdError && (
+              <div className="mb-4 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
+                {wdError}
+              </div>
+            )}
+            {wdSuccess && (
+              <div className="mb-4 p-3.5 rounded-xl bg-[#FACC15]/10 border border-[#FACC15]/35 text-[#FDE047] text-sm">
+                {wdSuccess}
+              </div>
+            )}
+
+            <form onSubmit={submitWithdrawal} className="space-y-4">
+              <div>
+                <span className="block text-xs font-medium text-emerald-100/85 mb-1.5">
+                  Select Withdrawal Method
+                </span>
+                <div className="grid grid-cols-3 gap-2.5">
+                  {(
+                    [
+                      { id: 'easypaisa', label: 'Easypaisa', icon: Smartphone },
+                      { id: 'jazzcash', label: 'JazzCash', icon: Smartphone },
+                      { id: 'bank_account', label: 'Bank Account', icon: Building2 },
+                    ] as const
+                  ).map((m) => {
+                    const Icon = m.icon;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        onClick={() => setWdMethod(m.id)}
+                        className={`min-h-[46px] px-2.5 py-2 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                          wdMethod === m.id
+                            ? 'bg-[#15803D]/35 border-[#FACC15] text-white'
+                            : 'bg-[#05130B] border-[#22C55E]/25 text-emerald-100/80 hover:border-[#4ADE80]/60'
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5 text-[#FACC15] shrink-0" />
+                        <span className="truncate">{m.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {wdMethod === 'bank_account' && (
+                <div>
+                  <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
+                    Bank Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    minLength={2}
+                    maxLength={64}
+                    value={bankName}
+                    onChange={(e) => setBankName(e.target.value)}
+                    placeholder="e.g. HBL, Meezan Bank, UBL, Allied Bank"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-[#05130B] border border-[#22C55E]/25 rounded-xl text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
+                  />
+                </div>
+              )}
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
+                    Account Holder Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    minLength={2}
+                    maxLength={64}
+                    value={accountTitle}
+                    onChange={(e) => setAccountTitle(e.target.value)}
+                    placeholder="Full name on account"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-[#05130B] border border-[#22C55E]/25 rounded-xl text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
+                    {wdMethod === 'bank_account'
+                      ? 'Bank Account Number / IBAN *'
+                      : `${wdMethod === 'easypaisa' ? 'Easypaisa' : 'JazzCash'} Number *`}
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    minLength={wdMethod === 'bank_account' ? 8 : 6}
+                    maxLength={wdMethod === 'bank_account' ? 34 : 20}
+                    value={accountNumber}
+                    onChange={(e) => setAccountNumber(e.target.value)}
+                    placeholder={
+                      wdMethod === 'bank_account'
+                        ? 'PKXX XXXX XXXX XXXX'
+                        : '03XX-XXXXXXX'
+                    }
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-[#05130B] border border-[#22C55E]/25 rounded-xl font-mono text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs mb-1.5">
+                  <label className="font-medium text-emerald-100/85">Withdrawal Amount (PKR) *</label>
+                  <span className="font-mono text-emerald-200/75">
+                    Max: {formatPKR(spendableBalance)}
+                  </span>
+                </div>
+                <input
+                  type="number"
+                  required
+                  min={200}
+                  max={Math.max(200, spendableBalance)}
+                  value={wdAmount}
+                  onChange={(e) => setWdAmount(e.target.value)}
+                  placeholder="Minimum 200"
+                  className="w-full min-h-[44px] px-3.5 py-2 bg-[#05130B] border border-[#22C55E]/25 rounded-xl font-mono text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
+                />
+                {exceedsBalance && (
+                  <p className="text-xs text-rose-400 mt-1">
+                    Amount exceeds your available unreserved balance ({formatPKR(spendableBalance)}).
+                  </p>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                disabled={wdLoading || exceedsBalance || spendableBalance < 200}
+                className="ff-btn-ember w-full min-h-[48px] px-5 py-2.5 rounded-xl font-bold text-sm disabled:opacity-50"
+              >
+                {wdLoading ? 'Submitting Withdrawal...' : 'Withdraw Money'}
+              </button>
+            </form>
+          </div>
+
+          <div className="lg:col-span-5 bg-[#091D12] border border-[#22C55E]/25 rounded-2xl p-5 sm:p-6 space-y-4">
+            <h3 className="font-display text-lg font-bold text-white">
+              Withdrawal Requests ({withdrawals.length})
+            </h3>
+            {withdrawals.length === 0 ? (
+              <p className="text-sm text-emerald-200/75">No withdrawal requests submitted yet.</p>
+            ) : (
+              <div className="divide-y divide-[#22C55E]/15 max-h-[460px] overflow-y-auto">
+                {withdrawals.map((w) => (
+                  <div key={w.id} className="py-3.5 flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-sm font-bold text-white font-mono">
+                        {formatPKR(w.amount)}
+                        <span className="font-sans font-medium text-xs text-[#FACC15] ml-2">
+                          {formatMethodLabel(w.method, w.bank_name)}
+                        </span>
+                      </div>
+                      {renderStatus(w.status)}
+                    </div>
+                    <div className="text-xs text-emerald-100/85">
+                      {w.account_title} · <span className="font-mono">{w.account_number}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] text-emerald-200/70">
+                      <span>{formatShortDate(w.created_at)}</span>
+                      {w.admin_note && <span className="truncate max-w-[60%]">{w.admin_note}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* WINNING HISTORY TAB */}
+      {subTab === 'winnings' && (
+        <div className="bg-[#091D12] border border-[#22C55E]/25 rounded-2xl p-5 sm:p-6 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-display text-lg font-bold text-white flex items-center gap-2">
+                <Trophy className="w-5 h-5 text-[#FACC15]" />
+                <span>Tournament Winning History ({winnings.length})</span>
+              </h2>
+              <p className="text-xs text-emerald-200/75 mt-0.5">
+                Verified Booyah placements and prize payouts credited to your personal wallet
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSubTab('withdraw')}
+              className="min-h-[42px] px-4 py-2 rounded-xl ff-btn-ember text-xs font-bold whitespace-nowrap"
+            >
+              Withdraw Money
+            </button>
+          </div>
+
+          {winnings.length === 0 ? (
+            <div className="py-8 text-center space-y-2 border-t border-[#22C55E]/15">
+              <Trophy className="w-8 h-8 text-[#FACC15] mx-auto opacity-85" />
+              <p className="text-sm text-white font-medium">No tournament winnings recorded yet</p>
+              <p className="text-xs text-emerald-200/75">
+                When an admin declares you a tournament winner, your prize money is automatically added to your wallet and listed here.
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y divide-[#22C55E]/15">
+              {winnings.map((win) => {
+                const rankBadge =
+                  win.placement === 1
+                    ? {
+                        emoji: '🏆',
+                        label: '1st Winner',
+                        boxClass: 'bg-[#FACC15]/15 border-[#FACC15]/55 text-[#FACC15]',
+                      }
+                    : win.placement === 2
+                      ? {
+                          emoji: '🥈',
+                          label: '2nd Winner',
+                          boxClass: 'bg-slate-300/15 border-slate-300/45 text-slate-100',
+                        }
+                      : win.placement === 3
+                        ? {
+                            emoji: '🥉',
+                            label: '3rd Winner',
+                            boxClass: 'bg-amber-500/15 border-amber-500/45 text-amber-300',
+                          }
+                        : {
+                            emoji: '🏅',
+                            label: `#${win.placement} Place`,
+                            boxClass: 'bg-[#22C55E]/15 border-[#22C55E]/40 text-[#4ADE80]',
+                          };
+                return (
+                  <div
+                    key={win.id}
+                    className="py-3.5 flex items-center justify-between gap-4"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div
+                        className={`w-11 h-11 rounded-xl border font-mono font-bold text-xs flex flex-col items-center justify-center shrink-0 ${rankBadge.boxClass}`}
+                      >
+                        <span className="text-sm leading-none" aria-hidden="true">
+                          {rankBadge.emoji}
+                        </span>
+                        <span className="text-[10px] mt-0.5 leading-none">
+                          #{win.placement}
+                        </span>
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-bold text-white truncate">
+                            {win.tournament_title}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-md border text-[10px] font-bold ${rankBadge.boxClass}`}
+                          >
+                            {rankBadge.label}
+                          </span>
+                        </div>
+                        <div className="text-xs text-emerald-200/75 mt-0.5">
+                          {win.tournament_mode} · Awarded {formatShortDate(win.declared_at)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="font-mono text-sm sm:text-base font-bold text-[#4ADE80] tabular-nums">
+                        +{formatPKR(win.prize_amount)}
+                      </div>
+                      <div className="text-[11px] text-[#FACC15]">Credited to Wallet</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* DEPOSIT TAB */}
       {subTab === 'deposit' && (
         <div className="grid lg:grid-cols-12 gap-6">
-          {/* Instructions & Channel Selection */}
-          <div className="lg:col-span-5 bg-[#11131E] border border-white/[0.08] rounded-2xl p-5 sm:p-6 space-y-5">
+          <div className="lg:col-span-5 bg-[#091D12] border border-[#22C55E]/25 rounded-2xl p-5 sm:p-6 space-y-5">
             <div>
               <h2 className="font-display text-lg font-bold text-white">
                 1. Choose Payment Method
               </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
+              <p className="text-xs text-emerald-200/75 mt-0.5">
                 Send your deposit to our verified Pakistani account below.
               </p>
             </div>
@@ -275,11 +613,11 @@ export const WalletView: React.FC<WalletViewProps> = ({
                     }}
                     className={`min-h-[48px] px-3 py-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-2 transition-colors ${
                       depMethod === m.id
-                        ? 'bg-[#00D4FF]/15 border-[#00D4FF] text-white'
-                        : 'bg-[#07080D] border-white/[0.08] text-slate-300 hover:border-white/25'
+                        ? 'bg-[#15803D]/35 border-[#FACC15] text-white'
+                        : 'bg-[#05130B] border-[#22C55E]/25 text-emerald-100/80 hover:border-[#4ADE80]/60'
                     }`}
                   >
-                    <Icon className="w-4 h-4 text-[#00D4FF]" />
+                    <Icon className="w-4 h-4 text-[#FACC15]" />
                     <span className="whitespace-nowrap">{m.label}</span>
                   </button>
                 );
@@ -287,28 +625,28 @@ export const WalletView: React.FC<WalletViewProps> = ({
             </div>
 
             {activeChannel && (
-              <div className="bg-[#07080D] border border-white/[0.08] rounded-xl p-4 space-y-3">
+              <div className="bg-[#05130B] border border-[#22C55E]/25 rounded-xl p-4 space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <div>
-                    <div className="text-xs text-slate-400">{activeChannel.providerLabel}</div>
+                    <div className="text-xs text-emerald-200/75">{activeChannel.providerLabel}</div>
                     <div className="text-sm font-semibold text-white">
                       {activeChannel.accountTitle}
                     </div>
                   </div>
                 </div>
 
-                <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg bg-[#11131E] border border-white/[0.08]">
-                  <span className="font-mono text-sm font-semibold text-[#00D4FF] truncate">
+                <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg bg-[#091D12] border border-[#22C55E]/25">
+                  <span className="font-mono text-sm font-semibold text-[#FACC15] truncate">
                     {activeChannel.accountNumber}
                   </span>
                   <button
                     type="button"
                     onClick={() => handleCopy(activeChannel.accountNumber, activeChannel.id)}
-                    className="min-h-[44px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white inline-flex items-center gap-1 shrink-0"
+                    className="min-h-[44px] px-3 rounded-lg bg-[#22C55E]/15 hover:bg-[#22C55E]/25 text-xs font-medium text-white inline-flex items-center gap-1 shrink-0"
                   >
                     {copiedId === activeChannel.id ? (
                       <>
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <Check className="w-3.5 h-3.5 text-[#4ADE80]" />
                         <span>Copied</span>
                       </>
                     ) : (
@@ -320,7 +658,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
                   </button>
                 </div>
 
-                <ol className="space-y-1.5 text-xs text-slate-300 list-decimal list-inside leading-relaxed">
+                <ol className="space-y-1.5 text-xs text-emerald-100/85 list-decimal list-inside leading-relaxed">
                   {activeChannel.instructions.map((step, idx) => (
                     <li key={idx}>{step}</li>
                   ))}
@@ -329,12 +667,11 @@ export const WalletView: React.FC<WalletViewProps> = ({
             )}
           </div>
 
-          {/* Deposit Proof Form */}
-          <div className="lg:col-span-7 bg-[#11131E] border border-white/[0.08] rounded-2xl p-5 sm:p-6">
+          <div className="lg:col-span-7 bg-[#091D12] border border-[#22C55E]/25 rounded-2xl p-5 sm:p-6">
             <h2 className="font-display text-lg font-bold text-white mb-1">
               2. Submit Payment Proof
             </h2>
-            <p className="text-xs text-slate-400 mb-5">
+            <p className="text-xs text-emerald-200/75 mb-5">
               Duplicate Transaction IDs are automatically blocked. Admin verifies receipts before adding funds.
             </p>
 
@@ -344,7 +681,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
               </div>
             )}
             {depSuccess && (
-              <div className="mb-4 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm">
+              <div className="mb-4 p-3.5 rounded-xl bg-[#22C55E]/15 border border-[#22C55E]/40 text-[#4ADE80] text-sm">
                 {depSuccess}
               </div>
             )}
@@ -352,7 +689,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
             <form onSubmit={submitDeposit} className="space-y-4">
               <div className="grid sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
                     Amount Sent (PKR)
                   </label>
                   <input
@@ -363,11 +700,11 @@ export const WalletView: React.FC<WalletViewProps> = ({
                     value={depAmount}
                     onChange={(e) => setDepAmount(e.target.value)}
                     placeholder="Minimum 100"
-                    className="w-full min-h-[44px] px-3.5 py-2 bg-[#07080D] border border-white/[0.12] rounded-xl font-mono text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#00D4FF]"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-[#05130B] border border-[#22C55E]/25 rounded-xl font-mono text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                  <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
                     Sender Mobile / Account No.
                   </label>
                   <input
@@ -377,13 +714,13 @@ export const WalletView: React.FC<WalletViewProps> = ({
                     value={senderAccount}
                     onChange={(e) => setSenderAccount(e.target.value)}
                     placeholder="e.g. 0301-1234567"
-                    className="w-full min-h-[44px] px-3.5 py-2 bg-[#07080D] border border-white/[0.12] rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#00D4FF]"
+                    className="w-full min-h-[44px] px-3.5 py-2 bg-[#05130B] border border-[#22C55E]/25 rounded-xl text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
                   Transaction ID (TID / Reference Code)
                 </label>
                 <input
@@ -393,29 +730,29 @@ export const WalletView: React.FC<WalletViewProps> = ({
                   value={transactionRef}
                   onChange={(e) => setTransactionRef(e.target.value.toUpperCase())}
                   placeholder="e.g. TID-98432104"
-                  className="w-full min-h-[44px] px-3.5 py-2 bg-[#07080D] border border-white/[0.12] rounded-xl font-mono text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#00D4FF]"
+                  className="w-full min-h-[44px] px-3.5 py-2 bg-[#05130B] border border-[#22C55E]/25 rounded-xl font-mono text-sm text-white placeholder:text-emerald-200/40 focus:outline-none focus:border-[#FACC15]"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                <label className="block text-xs font-medium text-emerald-100/85 mb-1.5">
                   Payment Receipt Screenshot
                 </label>
-                <label className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 rounded-xl border border-dashed border-white/[0.2] hover:border-[#00D4FF]/60 bg-[#07080D] cursor-pointer transition-colors">
+                <label className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 rounded-xl border border-dashed border-[#22C55E]/35 hover:border-[#FACC15] bg-[#05130B] cursor-pointer transition-colors">
                   <div className="flex items-center gap-3">
-                    <Upload className="w-5 h-5 text-[#00D4FF] shrink-0" />
+                    <Upload className="w-5 h-5 text-[#FACC15] shrink-0" />
                     <div>
                       <div className="text-sm font-medium text-white">
                         {screenshotData ? 'Screenshot attached' : 'Tap to upload screenshot'}
                       </div>
-                      <div className="text-xs text-slate-400">PNG, JPG, or WEBP up to 1.8 MB</div>
+                      <div className="text-xs text-emerald-200/70">PNG, JPG, or WEBP up to 1.8 MB</div>
                     </div>
                   </div>
                   {screenshotData && (
                     <img
                       src={screenshotData}
                       alt="Receipt preview"
-                      className="w-16 h-16 rounded-lg object-cover border border-white/15"
+                      className="w-16 h-16 rounded-lg object-cover border border-[#22C55E]/30"
                     />
                   )}
                   <input
@@ -430,7 +767,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
               <button
                 type="submit"
                 disabled={depLoading}
-                className="w-full min-h-[46px] px-5 py-2.5 rounded-xl bg-[#00D4FF] hover:bg-[#33DDFF] text-[#07080D] font-semibold text-sm disabled:opacity-60 transition-colors"
+                className="ff-btn-ember w-full min-h-[46px] px-5 py-2.5 rounded-xl font-bold text-sm disabled:opacity-60"
               >
                 {depLoading ? 'Submitting Request...' : 'Submit Deposit Request'}
               </button>
@@ -439,155 +776,20 @@ export const WalletView: React.FC<WalletViewProps> = ({
         </div>
       )}
 
-      {subTab === 'withdraw' && (
-        <div className="grid lg:grid-cols-12 gap-6">
-          <div className="lg:col-span-7 bg-[#11131E] border border-white/[0.08] rounded-2xl p-5 sm:p-6">
-            <h2 className="font-display text-lg font-bold text-white mb-1">
-              Request Withdrawal
-            </h2>
-            <p className="text-xs text-slate-400 mb-5">
-              Minimum PKR 200. Requested funds are safely reserved until admin transfer completes.
-            </p>
-
-            {wdError && (
-              <div className="mb-4 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
-                {wdError}
-              </div>
-            )}
-            {wdSuccess && (
-              <div className="mb-4 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm">
-                {wdSuccess}
-              </div>
-            )}
-
-            <form onSubmit={submitWithdrawal} className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                {(
-                  [
-                    { id: 'jazzcash', label: 'JazzCash' },
-                    { id: 'easypaisa', label: 'Easypaisa' },
-                  ] as const
-                ).map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => setWdMethod(m.id)}
-                    className={`min-h-[44px] px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${
-                      wdMethod === m.id
-                        ? 'bg-[#8B5CF6]/20 border-[#8B5CF6] text-white'
-                        : 'bg-[#07080D] border-white/[0.08] text-slate-300 hover:border-white/25'
-                    }`}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-
-              <div>
-                <div className="flex justify-between text-xs mb-1.5">
-                  <label className="font-medium text-slate-300">Withdrawal Amount (PKR)</label>
-                  <span className="font-mono text-slate-400">
-                    Max: {formatPKR(availableBalance)}
-                  </span>
-                </div>
-                <input
-                  type="number"
-                  required
-                  min={200}
-                  max={Math.max(200, availableBalance)}
-                  value={wdAmount}
-                  onChange={(e) => setWdAmount(e.target.value)}
-                  placeholder="Minimum 200"
-                  className="w-full min-h-[44px] px-3.5 py-2 bg-[#07080D] border border-white/[0.12] rounded-xl font-mono text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#8B5CF6]"
-                />
-                {exceedsBalance && (
-                  <p className="text-xs text-rose-400 mt-1">
-                    Amount exceeds your available balance ({formatPKR(availableBalance)}).
-                  </p>
-                )}
-              </div>
-
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                    Account Holder Title
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={accountTitle}
-                    onChange={(e) => setAccountTitle(e.target.value)}
-                    placeholder="Full name on account"
-                    className="w-full min-h-[44px] px-3.5 py-2 bg-[#07080D] border border-white/[0.12] rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#8B5CF6]"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                    Mobile Wallet Number
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={accountNumber}
-                    onChange={(e) => setAccountNumber(e.target.value)}
-                    placeholder="03XX-XXXXXXX"
-                    className="w-full min-h-[44px] px-3.5 py-2 bg-[#07080D] border border-white/[0.12] rounded-xl font-mono text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#8B5CF6]"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={wdLoading || exceedsBalance || availableBalance < 200}
-                className="w-full min-h-[46px] px-5 py-2.5 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-semibold text-sm disabled:opacity-50 transition-colors"
-              >
-                {wdLoading ? 'Submitting...' : 'Submit Withdrawal Request'}
-              </button>
-            </form>
-          </div>
-
-          <div className="lg:col-span-5 bg-[#11131E] border border-white/[0.08] rounded-2xl p-5 sm:p-6 space-y-4">
-            <h3 className="font-display text-lg font-bold text-white">Recent Payout Requests</h3>
-            {withdrawals.length === 0 ? (
-              <p className="text-sm text-slate-400">No withdrawal requests submitted yet.</p>
-            ) : (
-              <div className="divide-y divide-white/[0.06]">
-                {withdrawals.slice(0, 6).map((w) => (
-                  <div key={w.id} className="py-3 flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-semibold text-white">
-                        {formatPKR(w.amount)} · {w.method.replace('_', ' ')}
-                      </div>
-                      <div className="text-xs text-slate-400">
-                        {w.account_title} ({w.account_number})
-                      </div>
-                      {w.admin_note && (
-                        <div className="text-xs text-slate-400 mt-0.5">Note: {w.admin_note}</div>
-                      )}
-                    </div>
-                    {renderStatus(w.status)}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
+      {/* TRANSACTIONS & REQUEST HISTORY TAB */}
       {subTab === 'history' && (
         <div className="space-y-6">
-          {/* Deposit Requests Status */}
-          <div className="bg-[#11131E] border border-white/[0.08] rounded-2xl p-5 sm:p-6 space-y-4">
+          <div className="bg-[#091D12] border border-[#22C55E]/25 rounded-2xl p-5 sm:p-6 space-y-4">
             <h2 className="font-display text-lg font-bold text-white">
               Deposit Requests ({deposits.length})
             </h2>
             {deposits.length === 0 ? (
-              <p className="text-sm text-slate-400">No deposit requests yet.</p>
+              <p className="text-sm text-emerald-200/75">No deposit requests yet.</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
-                    <tr className="border-b border-white/[0.08] text-xs text-slate-400">
+                    <tr className="border-b border-[#22C55E]/20 text-xs text-emerald-200/75">
                       <th className="py-2.5 pr-4 font-medium">Method</th>
                       <th className="py-2.5 pr-4 font-medium">TID</th>
                       <th className="py-2.5 pr-4 font-medium">Amount</th>
@@ -595,20 +797,20 @@ export const WalletView: React.FC<WalletViewProps> = ({
                       <th className="py-2.5 font-medium text-right">Date</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-white/[0.06] text-sm">
+                  <tbody className="divide-y divide-[#22C55E]/15 text-sm">
                     {deposits.map((d) => (
                       <tr key={d.id}>
-                        <td className="py-3 pr-4 capitalize text-slate-200">
+                        <td className="py-3 pr-4 capitalize text-emerald-100">
                           {d.method.replace('_', ' ')}
                         </td>
-                        <td className="py-3 pr-4 font-mono text-xs text-slate-300">
+                        <td className="py-3 pr-4 font-mono text-xs text-emerald-100/85">
                           {d.transaction_ref}
                         </td>
                         <td className="py-3 pr-4 font-mono font-semibold text-white tabular-nums">
                           {formatPKR(d.amount)}
                         </td>
                         <td className="py-3 pr-4">{renderStatus(d.status)}</td>
-                        <td className="py-3 text-right text-xs text-slate-400 whitespace-nowrap">
+                        <td className="py-3 text-right text-xs text-emerald-200/70 whitespace-nowrap">
                           {formatShortDate(d.created_at)}
                         </td>
                       </tr>
@@ -619,23 +821,22 @@ export const WalletView: React.FC<WalletViewProps> = ({
             )}
           </div>
 
-          {/* Complete Transaction Ledger */}
-          <div className="bg-[#11131E] border border-white/[0.08] rounded-2xl p-5 sm:p-6 space-y-4">
+          <div className="bg-[#091D12] border border-[#22C55E]/25 rounded-2xl p-5 sm:p-6 space-y-4">
             <h2 className="font-display text-lg font-bold text-white">
-              Complete Transaction Ledger ({transactions.length})
+              Complete Transaction History ({transactions.length})
             </h2>
             {transactions.length === 0 ? (
-              <p className="text-sm text-slate-400">No transactions recorded yet.</p>
+              <p className="text-sm text-emerald-200/75">No transactions recorded yet.</p>
             ) : (
-              <div className="divide-y divide-white/[0.06]">
+              <div className="divide-y divide-[#22C55E]/15">
                 {transactions.map((tx) => (
                   <div key={tx.id} className="py-3.5 flex items-center justify-between gap-4">
                     <div className="flex items-center gap-3 min-w-0">
                       <div
                         className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
                           tx.direction === 'credit'
-                            ? 'bg-emerald-500/10 text-emerald-400'
-                            : 'bg-[#8B5CF6]/15 text-[#A78BFA]'
+                            ? 'bg-[#22C55E]/15 text-[#4ADE80]'
+                            : 'bg-[#FACC15]/15 text-[#FACC15]'
                         }`}
                       >
                         {tx.direction === 'credit' ? (
@@ -648,7 +849,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
                         <div className="text-sm font-medium text-white truncate">
                           {tx.description}
                         </div>
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mt-0.5">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-emerald-200/75 mt-0.5">
                           <span className="font-mono">{tx.tx_code}</span>
                           <span aria-hidden="true">·</span>
                           {renderStatus(tx.status)}
@@ -661,13 +862,13 @@ export const WalletView: React.FC<WalletViewProps> = ({
                     <div className="text-right shrink-0">
                       <div
                         className={`font-mono text-sm font-bold tabular-nums ${
-                          tx.direction === 'credit' ? 'text-emerald-400' : 'text-white'
+                          tx.direction === 'credit' ? 'text-[#4ADE80]' : 'text-white'
                         }`}
                       >
                         {tx.direction === 'credit' ? '+' : '-'}
                         {formatPKR(tx.amount)}
                       </div>
-                      <div className="font-mono text-[11px] text-slate-500 tabular-nums">
+                      <div className="font-mono text-[11px] text-emerald-200/60 tabular-nums">
                         Bal: {formatPKR(tx.balance_after)}
                       </div>
                     </div>

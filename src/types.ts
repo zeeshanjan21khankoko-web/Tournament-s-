@@ -9,6 +9,7 @@ export interface UserProfile {
   wallet_balance: number;
   matches_played: number;
   wins: number;
+  points?: number;
   created_at: string;
 }
 
@@ -46,15 +47,22 @@ export interface TournamentWinner {
   avatar_url: string;
 }
 
+export type TournamentMode = 'Battle Royale' | 'Clash Squad' | 'Lone Wolf';
+
 export interface Tournament {
   id: number;
   title: string;
   game_name: string;
+  mode: TournamentMode;
   entry_fee: number;
   prize_pool: number;
+  prize_1st: number;
+  prize_2nd: number;
+  prize_3rd: number;
   max_slots: number;
   filled_slots: number;
   match_time: string;
+  end_time: string;
   status: 'upcoming' | 'live' | 'completed' | 'cancelled';
   banner_url: string;
   rules: string;
@@ -90,13 +98,24 @@ export interface WithdrawalRecord {
   player_id?: string;
   email?: string;
   amount: number;
-  method: 'jazzcash' | 'easypaisa';
+  method: 'jazzcash' | 'easypaisa' | 'bank_account';
+  bank_name?: string;
   account_title: string;
   account_number: string;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'paid';
   admin_note: string;
   created_at: string;
   reviewed_at: string | null;
+}
+
+export interface WinningRecord {
+  id: number;
+  tournament_id: number;
+  tournament_title: string;
+  tournament_mode: TournamentMode;
+  placement: number;
+  prize_amount: number;
+  declared_at: string;
 }
 
 export interface TransactionRecord {
@@ -109,7 +128,7 @@ export interface TransactionRecord {
   amount: number;
   direction: 'credit' | 'debit';
   balance_after: number;
-  status: 'pending' | 'completed' | 'rejected';
+  status: 'pending' | 'approved' | 'paid' | 'completed' | 'rejected';
   reference_id: string;
   description: string;
   created_at: string;
@@ -136,4 +155,88 @@ export interface AdminOverview {
   totalWithdrawn: number;
   totalEntryFees: number;
   totalPrizesAwarded: number;
+  pendingTeamRegistrations?: number;
+  openContacts?: number;
 }
+
+export interface TeamRegistrationRecord {
+  id: number;
+  registration_code: string;
+  tournament_id: number;
+  tournament_title?: string;
+  tournament_mode?: TournamentMode;
+  match_time?: string;
+  user_id?: number | null;
+  leader_name: string;
+  freefire_uid: string;
+  whatsapp_number?: string;
+  team_name: string;
+  squad_type: 'Solo' | 'Duo' | 'Squad';
+  teammates: string;
+  payment_method: 'free' | 'wallet' | 'jazzcash' | 'easypaisa';
+  payment_ref: string;
+  status: 'pending' | 'confirmed' | 'rejected';
+  created_at: string;
+}
+
+export interface AnnouncementRecord {
+  id: number;
+  title: string;
+  category: 'Announcement' | 'Match Result' | 'Room Alert' | 'Rules Update';
+  tournament_id: number | null;
+  tournament_title?: string | null;
+  content: string;
+  is_pinned: number;
+  created_at: string;
+}
+
+export interface ContactMessageRecord {
+  id: number;
+  ticket_code: string;
+  name: string;
+  whatsapp_number: string;
+  freefire_uid: string;
+  subject: string;
+  message: string;
+  status: 'open' | 'resolved';
+  created_at: string;
+}
+
+export interface YouTubeVideoRecord {
+  id: number;
+  title: string;
+  youtube_url: string;
+  video_id: string;
+  is_featured: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type LeaderboardPeriod = 'daily' | 'weekly' | 'monthly' | 'all';
+
+export interface LeaderboardEntry {
+  rank: number;
+  user_id: number;
+  player_id: string;
+  username: string;
+  avatar_url: string;
+  points: number;
+  matches: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  first_places: number;
+  second_places: number;
+  third_places: number;
+  podiums: number;
+  total_prize_won: number;
+}
+
+export interface LeaderboardSummary {
+  totalPlayers: number;
+  totalMatches: number;
+  totalWins: number;
+  totalPrizesDistributed: number;
+  topScore: number;
+}
+

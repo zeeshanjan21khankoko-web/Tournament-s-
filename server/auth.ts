@@ -18,6 +18,7 @@ export interface AuthUser {
   wallet_balance: number;
   matches_played: number;
   wins: number;
+  points: number;
   created_at: string;
 }
 
@@ -64,6 +65,92 @@ export function isAdminPasscodeConfigured(): boolean {
   return Boolean((process.env.ADMIN_PASSCODE || '').trim());
 }
 
+export const SESSION_COOKIE_NAME = 'ff09_session';
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+function hashSessionToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+export function createPersistentSession(userId: number): string {
+  const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = hashSessionToken(token);
+  const expiresAt = Date.now() + SESSION_TTL_MS;
+  db.prepare(
+    'INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)'
+  ).run(tokenHash, userId, expiresAt);
+  return token;
+}
+
+export function revokePersistentSession(token: string): void {
+  if (!token) return;
+  try {
+    db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashSessionToken(token));
+  } catch {
+    // Ignore cleanup errors
+  }
+}
+
+function getCookieValue(req: Request, cookieName: string): string | null {
+  const raw = req.headers.cookie;
+  if (!raw) return null;
+  const pairs = raw.split(';');
+  for (const pair of pairs) {
+    const idx = pair.indexOf('=');
+    if (idx === -1) continue;
+    const name = pair.slice(0, idx).trim();
+    if (name === cookieName) {
+      const val = pair.slice(idx + 1).trim();
+      try {
+        return decodeURIComponent(val);
+      } catch {
+        return val;
+      }
+    }
+  }
+  return null;
+}
+
+function isHttpsRequest(req: Request): boolean {
+  if (req.secure) return true;
+  const forwarded = req.headers['x-forwarded-proto'];
+  if (typeof forwarded === 'string') {
+    return forwarded.split(',')[0].trim().toLowerCase() === 'https';
+  }
+  return false;
+}
+
+export function setSessionCookie(req: Request, res: Response, token: string): void {
+  const maxAgeSeconds = Math.floor(SESSION_TTL_MS / 1000);
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    'Path=/',
+    `Max-Age=${maxAgeSeconds}`,
+    'HttpOnly',
+  ];
+  if (isHttpsRequest(req)) {
+    parts.push('Secure', 'SameSite=None', 'Partitioned');
+  } else {
+    parts.push('SameSite=Lax');
+  }
+  res.append('Set-Cookie', parts.join('; '));
+}
+
+export function clearSessionCookie(req: Request, res: Response): void {
+  const parts = [
+    `${SESSION_COOKIE_NAME}=`,
+    'Path=/',
+    'Max-Age=0',
+    'HttpOnly',
+  ];
+  if (isHttpsRequest(req)) {
+    parts.push('Secure', 'SameSite=None', 'Partitioned');
+  } else {
+    parts.push('SameSite=Lax');
+  }
+  res.append('Set-Cookie', parts.join('; '));
+}
+
 export function signToken(userId: number, role: 'player' | 'admin'): string {
   const payload: TokenPayload = {
     uid: userId,
@@ -108,7 +195,7 @@ export function verifyToken(token: string): TokenPayload | null {
 
 const USER_PUBLIC_COLUMNS = `
   id, player_id, username, email, avatar_url, role, is_blocked,
-  wallet_balance, matches_played, wins, created_at
+  wallet_balance, matches_played, wins, points, created_at
 `;
 
 export function getUserById(userId: number): AuthUser | undefined {
@@ -117,30 +204,85 @@ export function getUserById(userId: number): AuthUser | undefined {
     .get(userId) as AuthUser | undefined;
 }
 
-export function extractBearerUser(req: Request): AuthUser | null {
+export function resolveAuthToken(
+  req: Request
+): { token: string; source: 'bearer' | 'cookie' } | null {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
-  const token = authHeader.slice(7).trim();
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const bearer = authHeader.slice(7).trim();
+    if (bearer) return { token: bearer, source: 'bearer' };
+  }
+  const cookieToken = getCookieValue(req, SESSION_COOKIE_NAME);
+  if (cookieToken) return { token: cookieToken, source: 'cookie' };
+  return null;
+}
+
+function getSessionUserId(token: string): number | null {
+  const tokenHash = hashSessionToken(token);
+  const row = db
+    .prepare('SELECT user_id, expires_at FROM sessions WHERE token_hash = ?')
+    .get(tokenHash) as { user_id: number; expires_at: number } | undefined;
+  if (row) {
+    if (row.expires_at > Date.now()) {
+      return row.user_id;
+    }
+    db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
+    return null;
+  }
   const payload = verifyToken(token);
-  if (!payload) return null;
-  const user = getUserById(payload.uid);
+  return payload ? payload.uid : null;
+}
+
+function hasValidCookieCsrf(req: Request): boolean {
+  const xrw = req.headers['x-requested-with'];
+  if (typeof xrw === 'string' && xrw.toLowerCase() === 'xmlhttprequest') {
+    return true;
+  }
+  const origin = req.headers.origin;
+  const host =
+    (typeof req.headers['x-forwarded-host'] === 'string' && req.headers['x-forwarded-host'].split(',')[0].trim()) ||
+    req.headers.host;
+  if (typeof origin === 'string' && host) {
+    try {
+      const parsed = new URL(origin);
+      return parsed.host === host;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+export function extractBearerUser(req: Request): AuthUser | null {
+  const resolved = resolveAuthToken(req);
+  if (!resolved) return null;
+  const uid = getSessionUserId(resolved.token);
+  if (!uid) return null;
+  const user = getUserById(uid);
   if (!user || user.is_blocked === 1) return null;
   return user;
 }
 
 export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  const resolved = resolveAuthToken(req);
+  if (!resolved) {
     res.status(401).json({ error: 'Authentication required. Please sign in.' });
     return;
   }
-  const token = authHeader.slice(7).trim();
-  const payload = verifyToken(token);
-  if (!payload) {
+  if (
+    resolved.source === 'cookie' &&
+    ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method.toUpperCase()) &&
+    !hasValidCookieCsrf(req)
+  ) {
+    res.status(403).json({ error: 'Cross-origin request blocked.' });
+    return;
+  }
+  const uid = getSessionUserId(resolved.token);
+  if (!uid) {
     res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
     return;
   }
-  const user = getUserById(payload.uid);
+  const user = getUserById(uid);
   if (!user) {
     res.status(401).json({ error: 'Account no longer exists.' });
     return;

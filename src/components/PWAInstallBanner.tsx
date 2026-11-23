@@ -91,7 +91,7 @@ export const PWAInstallButton: React.FC<{ compact?: boolean }> = ({ compact = fa
       <button
         type="button"
         onClick={install}
-        className={`min-h-[44px] inline-flex items-center justify-center gap-2 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-semibold transition-colors whitespace-nowrap shrink-0 ${
+        className={`ff-btn-ember min-h-[44px] inline-flex items-center justify-center gap-2 rounded-xl font-semibold whitespace-nowrap shrink-0 ${
           compact ? 'px-3 py-2 text-xs' : 'px-4 py-2.5 text-sm'
         }`}
       >
@@ -107,43 +107,43 @@ export const PWAInstallButton: React.FC<{ compact?: boolean }> = ({ compact = fa
         <button
           type="button"
           onClick={() => setShowGuide(true)}
-          className={`min-h-[44px] inline-flex items-center justify-center gap-2 rounded-xl border border-white/[0.15] bg-[#11131E] hover:border-[#00D4FF]/60 text-slate-200 font-semibold transition-colors whitespace-nowrap shrink-0 ${
+          className={`min-h-[44px] inline-flex items-center justify-center gap-2 rounded-xl border border-[#22C55E]/30 bg-[#091D12] hover:border-[#FACC15]/70 text-emerald-50 font-semibold transition-colors whitespace-nowrap shrink-0 ${
             compact ? 'px-3 py-2 text-xs' : 'px-4 py-2.5 text-sm'
           }`}
         >
-          <Smartphone className="w-4 h-4 text-[#00D4FF]" />
+          <Smartphone className="w-4 h-4 text-[#FACC15]" />
           <span>Install on Phone</span>
         </button>
 
         {showGuide && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
             onClick={() => setShowGuide(false)}
           >
             <div
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-sm rounded-2xl bg-[#11131E] border border-white/[0.12] p-6 space-y-4 shadow-2xl"
+              className="w-full max-w-sm rounded-2xl bg-[#091D12] border border-[#22C55E]/35 p-6 space-y-4 shadow-2xl"
             >
               <div className="flex items-center justify-between">
-                <h3 className="font-display text-lg font-bold text-white">Install Pro Tournament</h3>
+                <h3 className="font-display text-lg font-bold text-white">Install FREE FIRE TOURNAMENT 09</h3>
                 <button
                   type="button"
                   onClick={() => setShowGuide(false)}
                   aria-label="Close install guide"
-                  className="min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-400 hover:text-white"
+                  className="min-h-[44px] min-w-[44px] flex items-center justify-center text-emerald-200/75 hover:text-white"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
-              <ol className="space-y-2 text-sm text-slate-300 list-decimal list-inside">
+              <ol className="space-y-2 text-sm text-emerald-50/85 list-decimal list-inside">
                 <li>Tap the <strong>Share</strong> icon in your Safari toolbar.</li>
                 <li>Scroll down and tap <strong>Add to Home Screen</strong>.</li>
-                <li>Tap <strong>Add</strong> to launch Pro Tournament full-screen.</li>
+                <li>Tap <strong>Add</strong> to launch FREE FIRE TOURNAMENT 09 full-screen.</li>
               </ol>
               <button
                 type="button"
                 onClick={() => setShowGuide(false)}
-                className="w-full min-h-[44px] rounded-xl bg-[#00D4FF] text-[#07080D] text-sm font-semibold"
+                className="ff-btn-ember w-full min-h-[44px] rounded-xl text-sm font-bold"
               >
                 Got It
               </button>
@@ -165,7 +165,7 @@ export const OfflineIndicator: React.FC = () => {
   return (
     <div
       role="status"
-      className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2 text-xs font-medium text-amber-300 flex items-center justify-center gap-2"
+      className="bg-[#FACC15]/15 border-b border-[#FACC15]/35 px-4 py-2 text-xs font-medium text-[#FDE047] flex items-center justify-center gap-2"
     >
       <WifiOff className="w-3.5 h-3.5 shrink-0" />
       <span>Offline Mode — Showing cached tournament schedule. Live wallet actions require connection.</span>

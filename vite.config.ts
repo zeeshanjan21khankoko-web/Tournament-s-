@@ -11,16 +11,16 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       VitePWA({
-        registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'icon.svg'],
+        registerType: 'prompt',
+        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png'],
         manifest: {
           id: '/',
-          name: 'Pro Tournament',
-          short_name: 'ProTourney',
+          name: 'FREE FIRE TOURNAMENT 09',
+          short_name: 'FF Tourney 09',
           description:
-            'Competitive mobile esports tournament platform with verified PKR wallet deposits, withdrawals, live brackets, and admin operations.',
-          theme_color: '#07080D',
-          background_color: '#07080D',
+            'Free Fire Tournament 09 - Join Free Fire Tournaments, Register Your Team and Win Prizes.',
+          theme_color: '#04110A',
+          background_color: '#04110A',
           display: 'standalone',
           orientation: 'portrait',
           start_url: '/',
@@ -96,8 +96,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
       }),
       // Copies src/assets into dist/ so root-relative URLs like
