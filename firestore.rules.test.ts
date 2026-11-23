@@ -88,4 +88,12 @@ export const DIRTY_DOZEN_TEST_CASES = [
     auth: { uid: 'admin_1', email: 'zeeshanjan21khankoko@gmail.com', email_verified: true },
     expected: 'PERMISSION_DENIED',
   },
+  {
+    name: 'Non-admin or auto_creation_disabled=false write to /app_settings/tournament_policy',
+    path: '/app_settings/tournament_policy',
+    operation: 'update',
+    auth: { uid: 'admin_1', email: 'zeeshanjan21khankoko@gmail.com', email_verified: true },
+    payloadOverride: { auto_creation_disabled: false },
+    expected: 'PERMISSION_DENIED',
+  },
 ] as const;

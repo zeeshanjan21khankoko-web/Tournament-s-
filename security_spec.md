@@ -7,6 +7,7 @@
 4. **PII Isolation**: User emails are stored only in `/users/{userId}` (restricted to owner and admin), never in `/users_public/{userId}` or `/tournaments/{tournamentId}`. Room ID and password are stored in `/tournaments/{tournamentId}/secrets/room` and readable only by admins or registered players.
 5. **Privilege Escalation Guard**: Regular users creating `/users/{userId}` can only assign `role: 'player'` and cannot write `/admins/{userId}`.
 6. **Terminal State Protection**: Completed or cancelled tournaments cannot be reopened or mutated by non-admin clients (all tournament writes are strictly admin-only).
+7. **Permanent Manual-Only Policy Lock**: `/app_settings/{settingId}` enforces `auto_creation_disabled == true` and `manual_admin_only == true`, is writable solely by the bootstrapped verified Admin, and cannot be deleted.
 
 ## 2. Dirty Dozen Adversarial Payloads
 1. **Unauthenticated Tournament Creation**: Anonymous client attempts `create` on `/tournaments/tour_99` -> `PERMISSION_DENIED`.

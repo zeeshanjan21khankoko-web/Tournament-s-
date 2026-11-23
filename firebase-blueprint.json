@@ -315,6 +315,39 @@
         }
       },
       "required": ["id", "title", "category", "content", "is_pinned", "created_by_uid", "created_at"]
+    },
+    "AppTournamentPolicy": {
+      "title": "AppTournamentPolicy",
+      "description": "Permanent admin-only policy locking automatic tournament creation disabled and recording deleted tournament IDs.",
+      "type": "object",
+      "properties": {
+        "auto_creation_disabled": {
+          "type": "boolean"
+        },
+        "manual_admin_only": {
+          "type": "boolean"
+        },
+        "deleted_tournament_ids": {
+          "type": "array"
+        },
+        "updated_by_uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "auto_creation_disabled",
+        "manual_admin_only",
+        "deleted_tournament_ids",
+        "updated_by_uid",
+        "updated_at"
+      ]
     }
   },
   "firestore": {
@@ -345,6 +378,10 @@
     "/announcements/{announcementId}": {
       "schema": { "$ref": "#/entities/Announcement" },
       "description": "Admin-managed announcements."
+    },
+    "/app_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/AppTournamentPolicy" },
+      "description": "Permanent tournament policy disabling automatic creation and storing deleted tournament tombstones."
     }
   }
 }

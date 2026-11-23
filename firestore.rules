@@ -145,6 +145,21 @@ service cloud.firestore {
         data.created_at is timestamp;
     }
 
+    function isValidAppTournamentPolicy(data) {
+      return data.keys().hasAll([
+          'auto_creation_disabled', 'manual_admin_only', 'deleted_tournament_ids', 'updated_by_uid', 'updated_at'
+        ]) &&
+        data.keys().hasOnly([
+          'auto_creation_disabled', 'manual_admin_only', 'deleted_tournament_ids', 'updated_by_uid', 'updated_at'
+        ]) &&
+        data.auto_creation_disabled == true &&
+        data.manual_admin_only == true &&
+        data.deleted_tournament_ids is list && data.deleted_tournament_ids.size() <= 200 &&
+        (data.deleted_tournament_ids.size() == 0 || data.deleted_tournament_ids[0] is int) &&
+        data.updated_by_uid is string && isValidId(data.updated_by_uid) &&
+        data.updated_at is timestamp;
+    }
+
     // --- Collection Rules ---
 
     // Connection probe document for startup SDK verification
@@ -285,6 +300,17 @@ service cloud.firestore {
         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'category', 'content', 'is_pinned']) &&
         isAdmin();
       allow delete: if isVerifiedUser() && isValidId(announcementId) && isAdmin();
+    }
+
+    // Permanent tournament policy: readable as single doc, writable only by bootstrapped Admin with auto_creation_disabled == true
+    match /app_settings/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if false;
+      allow create, update: if isBootstrappedAdmin() && isValidId(settingId) &&
+        isValidAppTournamentPolicy(incoming()) &&
+        incoming().updated_by_uid == request.auth.uid &&
+        incoming().updated_at == request.time;
+      allow delete: if false;
     }
   }
 }

@@ -31,6 +31,7 @@ import {
   deleteTournamentFromFirestore,
   getFirestoreTournamentCount,
   isFirebaseAdminUser,
+  saveTournamentPolicyToFirestore,
   signInFirebaseAdmin,
   signOutFirebaseAdmin,
   syncTournamentToFirestore,
@@ -115,6 +116,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     isFirebaseAdminUser() ? auth.currentUser?.email || ADMIN_FIREBASE_EMAIL : null
   );
   const [firebaseTourCount, setFirebaseTourCount] = useState<number>(0);
+  const [deletedTournamentIds, setDeletedTournamentIds] = useState<number[]>([]);
   const [syncingCloud, setSyncingCloud] = useState(false);
   const [connectingFirebase, setConnectingFirebase] = useState(false);
 
@@ -200,7 +202,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setLoading(true);
     setError('');
     try {
-      const [ov, us, deps, wds, txs, regs, anns, cts, vids] = await Promise.all([
+      const [ov, us, deps, wds, txs, regs, anns, cts, vids, pol] = await Promise.all([
         apiRequest<{ overview: AdminOverview }>('/api/admin/overview', { token }),
         apiRequest<{ users: AdminUserRow[] }>('/api/admin/users', { token }),
         apiRequest<{ deposits: DepositRecord[] }>('/api/admin/deposits', { token }),
@@ -212,6 +214,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         apiRequest<{ announcements: AnnouncementRecord[] }>('/api/announcements'),
         apiRequest<{ contacts: ContactMessageRecord[] }>('/api/admin/contacts', { token }),
         apiRequest<{ videos: YouTubeVideoRecord[] }>('/api/videos').catch(() => ({ videos: [] })),
+        apiRequest<{ deletedTournamentIds?: number[] }>('/api/admin/tournament-policy', {
+          token,
+        }).catch(() => ({ deletedTournamentIds: [] })),
       ]);
       setOverview(ov.overview);
       setUsers(us.users);
@@ -222,6 +227,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setAnnouncements(anns.announcements || []);
       setContacts(cts.contacts || []);
       setVideos(vids.videos || []);
+      setDeletedTournamentIds(pol.deletedTournamentIds || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load admin data.');
     } finally {
@@ -293,12 +299,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
     setSyncingCloud(true);
     try {
+      for (const delId of deletedTournamentIds) {
+        await deleteTournamentFromFirestore(delId).catch(() => {});
+      }
       for (const t of tournaments) {
         await syncTournamentToFirestore(t);
       }
+      await saveTournamentPolicyToFirestore(deletedTournamentIds);
       const count = await getFirestoreTournamentCount();
       setFirebaseTourCount(count);
-      setNotice(`Saved ${tournaments.length} tournament(s) permanently to Firebase Database.`);
+      setNotice(
+        `Saved ${tournaments.length} tournament(s) and locked manual-only tournament policy in Firebase Database.`
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to sync tournaments to Firebase.');
     } finally {
@@ -561,7 +573,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         const res = await apiRequest<{ tournament: Tournament }>('/api/admin/tournaments', {
           method: 'POST',
           token,
-          body,
+          headers: { 'X-Manual-Admin-Action': 'create-tournament-button' },
+          body: { ...body, manualCreateConfirm: true },
         });
         savedTournament = res.tournament;
         setNotice('Tournament created with PKT schedule and Top 5 winner prize tiers.');
@@ -575,6 +588,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       }
       if (savedTournament && isFirebaseAdminUser()) {
         await syncTournamentToFirestore(savedTournament);
+        await saveTournamentPolicyToFirestore(deletedTournamentIds).catch(() => {});
         const count = await getFirestoreTournamentCount();
         setFirebaseTourCount(count);
       }
@@ -591,13 +605,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setError('');
     setNotice('');
     try {
-      await apiRequest(`/api/admin/tournaments/${id}`, { method: 'DELETE', token });
+      const res = await apiRequest<{ ok: boolean; deletedTournamentIds?: number[] }>(
+        `/api/admin/tournaments/${id}`,
+        { method: 'DELETE', token }
+      );
+      const nextDeleted = Array.isArray(res.deletedTournamentIds)
+        ? res.deletedTournamentIds
+        : Array.from(new Set([...deletedTournamentIds, id]));
+      setDeletedTournamentIds(nextDeleted);
       if (isFirebaseAdminUser()) {
         await deleteTournamentFromFirestore(id);
+        await saveTournamentPolicyToFirestore(nextDeleted).catch(() => {});
         const count = await getFirestoreTournamentCount();
         setFirebaseTourCount(count);
       }
-      setNotice('Tournament removed and any active entry fees refunded.');
+      setNotice('Tournament permanently removed and any active entry fees refunded.');
       await Promise.all([onRefreshPublic(), loadAdminData()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete tournament.');
@@ -1335,14 +1357,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <div className="min-w-0">
                 <div className="text-xs font-bold text-white flex flex-wrap items-center gap-2">
                   <span>Firebase Database &amp; Admin Protection</span>
+                  <span className="px-2 py-0.5 rounded-md bg-[#22C55E]/15 border border-[#22C55E]/35 text-[10px] font-bold text-[#4ADE80]">
+                    Auto Creation: Disabled (Manual Only)
+                  </span>
                   <span className="font-mono text-[11px] text-[#FACC15]">
                     {firebaseTourCount} Cloud Record{firebaseTourCount === 1 ? '' : 's'}
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400 truncate">
                   {firebaseAdminEmail
-                    ? `Admin connected (${firebaseAdminEmail}) · Auto-reset disabled · Manual admin writes only`
-                    : `Connect Google Admin (${ADMIN_FIREBASE_EMAIL}) to back up & lock tournaments in Firebase`}
+                    ? `Admin connected (${firebaseAdminEmail}) · Auto-creation & auto-restore permanently disabled`
+                    : `Auto-creation disabled · Connect Google Admin (${ADMIN_FIREBASE_EMAIL}) to back up & lock tournaments in Firebase`}
                 </p>
               </div>
             </div>

@@ -118,10 +118,12 @@ export async function apiRequest<T>(
     method?: string;
     body?: unknown;
     token?: string | null;
+    headers?: Record<string, string>;
   } = {}
 ): Promise<T> {
   const headers: Record<string, string> = {
     'X-Requested-With': 'XMLHttpRequest',
+    ...(options.headers || {}),
   };
   if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json';

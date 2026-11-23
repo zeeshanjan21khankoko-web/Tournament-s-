@@ -240,3 +240,63 @@ export function subscribeTournamentsFromFirestore(
     }
   );
 }
+
+export interface TournamentPolicySnapshot {
+  autoCreationDisabled: boolean;
+  manualAdminOnly: boolean;
+  deletedTournamentIds: number[];
+}
+
+export async function saveTournamentPolicyToFirestore(deletedIds: number[]): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !isFirebaseAdminUser()) return;
+  const cleanIds = Array.from(
+    new Set(deletedIds.map((n) => Math.floor(Number(n))).filter((n) => Number.isInteger(n) && n > 0))
+  )
+    .sort((a, b) => b - a)
+    .slice(0, 200);
+
+  const policyPath = 'app_settings/tournament_policy';
+  try {
+    await setDoc(doc(db, 'app_settings', 'tournament_policy'), {
+      auto_creation_disabled: true,
+      manual_admin_only: true,
+      deleted_tournament_ids: cleanIds,
+      updated_by_uid: user.uid,
+      updated_at: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, policyPath);
+  }
+}
+
+export function subscribeTournamentPolicyFromFirestore(
+  onPolicy: (policy: TournamentPolicySnapshot) => void
+): Unsubscribe {
+  const policyRef = doc(db, 'app_settings', 'tournament_policy');
+  return onSnapshot(
+    policyRef,
+    (snap) => {
+      if (!snap.exists()) {
+        onPolicy({
+          autoCreationDisabled: true,
+          manualAdminOnly: true,
+          deletedTournamentIds: [],
+        });
+        return;
+      }
+      const d = snap.data();
+      const rawIds = Array.isArray(d.deleted_tournament_ids) ? d.deleted_tournament_ids : [];
+      onPolicy({
+        autoCreationDisabled: d.auto_creation_disabled !== false,
+        manualAdminOnly: d.manual_admin_only !== false,
+        deletedTournamentIds: rawIds
+          .map((n: unknown) => Math.floor(Number(n)))
+          .filter((n: number) => Number.isInteger(n) && n > 0),
+      });
+    },
+    (error) => {
+      console.warn('Firestore policy listener notice:', error.message);
+    }
+  );
+}

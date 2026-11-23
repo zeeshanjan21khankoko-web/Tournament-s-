@@ -1149,6 +1149,12 @@ function enrichTournament(t: Record<string, unknown>, viewer: ReturnType<typeof 
 app.get('/api/tournaments', (req: Request, res: Response) => {
   const viewer = extractBearerUser(req);
   const rows = db.prepare('SELECT * FROM tournaments').all() as Array<Record<string, unknown>>;
+  const deletedRows = db
+    .prepare('SELECT tournament_id FROM deleted_tournaments ORDER BY tournament_id DESC LIMIT 200')
+    .all() as Array<{ tournament_id: number }>;
+  const deletedTournamentIds = deletedRows.map((d) => Number(d.tournament_id)).filter((n) => n > 0);
+  const deletedSet = new Set(deletedTournamentIds);
+
   const orderRank: Record<TournamentStatus, number> = {
     live: 0,
     upcoming: 1,
@@ -1156,13 +1162,21 @@ app.get('/api/tournaments', (req: Request, res: Response) => {
     cancelled: 3,
   };
   const enriched = rows
+    .filter((r) => !deletedSet.has(Number(r.id)))
     .map((r) => enrichTournament(r, viewer))
     .sort((a, b) => {
       const rankDiff = orderRank[a.status] - orderRank[b.status];
       if (rankDiff !== 0) return rankDiff;
       return Date.parse(String(a.match_time)) - Date.parse(String(b.match_time));
     });
-  res.json({ tournaments: enriched });
+  res.json({
+    tournaments: enriched,
+    deletedTournamentIds,
+    policy: {
+      autoCreationDisabled: true,
+      manualAdminOnly: true,
+    },
+  });
 });
 
 app.get('/api/tournaments/:id', (req: Request, res: Response) => {
@@ -2124,8 +2138,30 @@ app.post('/api/admin/users/:id/award-prize', requireAuth, requireAdmin, (req: Au
 });
 
 // --- ADMIN TOURNAMENT MANAGEMENT ---
+app.get('/api/admin/tournament-policy', requireAuth, requireAdmin, (_req: AuthenticatedRequest, res: Response) => {
+  const deletedRows = db
+    .prepare('SELECT tournament_id FROM deleted_tournaments ORDER BY tournament_id DESC LIMIT 200')
+    .all() as Array<{ tournament_id: number }>;
+  res.json({
+    policy: {
+      autoSeedDisabled: true,
+      autoCreationDisabled: true,
+      manualAdminOnly: true,
+    },
+    deletedTournamentIds: deletedRows.map((d) => Number(d.tournament_id)),
+  });
+});
+
 app.post('/api/admin/tournaments', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
   try {
+    const manualHeader = req.headers['x-manual-admin-action'];
+    if (manualHeader !== 'create-tournament-button' || req.body?.manualCreateConfirm !== true) {
+      res.status(403).json({
+        error:
+          'Automatic tournament creation is permanently disabled. Click the Create Tournament button as Admin to add a tournament manually.',
+      });
+      return;
+    }
     const title = typeof req.body.title === 'string' ? req.body.title.trim() : '';
     const gameName = typeof req.body.gameName === 'string' && req.body.gameName.trim() ? req.body.gameName.trim() : 'Free Fire';
     const mode = normalizeMode(req.body.mode);
@@ -2461,14 +2497,22 @@ app.delete('/api/admin/tournaments/:id', requireAuth, requireAdmin, (req: Authen
       }
 
       db.prepare('DELETE FROM tournaments WHERE id = ?').run(id);
-      return { ok: true };
+      db.prepare('INSERT OR IGNORE INTO deleted_tournaments (tournament_id) VALUES (?)').run(id);
+      return { ok: true, deletedId: id };
     }).immediate();
 
     if ('notFound' in result) {
       res.status(404).json({ error: 'Tournament not found.' });
       return;
     }
-    res.json({ ok: true });
+    const deletedRows = db
+      .prepare('SELECT tournament_id FROM deleted_tournaments ORDER BY tournament_id DESC LIMIT 200')
+      .all() as Array<{ tournament_id: number }>;
+    res.json({
+      ok: true,
+      deletedId: id,
+      deletedTournamentIds: deletedRows.map((d) => Number(d.tournament_id)),
+    });
   } catch (err) {
     console.error('Delete tournament error:', err);
     res.status(500).json({ error: 'Failed to delete tournament.' });

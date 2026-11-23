@@ -25,8 +25,16 @@ import {
   formatRs,
   formatShortDate,
 } from './lib/api';
-import { loadCachedTournaments, saveCachedTournaments } from './lib/offlineCache';
-import { subscribeTournamentsFromFirestore } from './lib/firestoreSync';
+import {
+  loadCachedTournaments,
+  loadDeletedTournamentIds,
+  saveCachedTournaments,
+  saveDeletedTournamentIds,
+} from './lib/offlineCache';
+import {
+  subscribeTournamentPolicyFromFirestore,
+  subscribeTournamentsFromFirestore,
+} from './lib/firestoreSync';
 import { DownloadTournamentAppButton, OfflineIndicator } from './components/PWAInstallBanner';
 import { AuthView } from './components/AuthView';
 import { HomeDashboard } from './components/HomeDashboard';
@@ -119,6 +127,9 @@ export default function App() {
   const [apiTournaments, setApiTournaments] = useState<Tournament[]>([]);
   const [cloudTournaments, setCloudTournaments] = useState<Tournament[]>([]);
   const [offlineFallbackTournaments, setOfflineFallbackTournaments] = useState<Tournament[]>([]);
+  const [apiDeletedIds, setApiDeletedIds] = useState<number[]>(() => loadDeletedTournamentIds());
+  const [cloudDeletedIds, setCloudDeletedIds] = useState<number[]>([]);
+  const [hasLoadedApi, setHasLoadedApi] = useState(false);
   const [announcements, setAnnouncements] = useState<AnnouncementRecord[]>([]);
   const [videos, setVideos] = useState<YouTubeVideoRecord[]>([]);
   const [topLeaderboard, setTopLeaderboard] = useState<LeaderboardEntry[]>([]);
@@ -219,34 +230,44 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [user]);
 
+  const deletedTournamentIds = useMemo(() => {
+    const merged = new Set<number>([...apiDeletedIds, ...cloudDeletedIds]);
+    return Array.from(merged).filter((id) => Number.isInteger(id) && id > 0);
+  }, [apiDeletedIds, cloudDeletedIds]);
+
+  useEffect(() => {
+    saveDeletedTournamentIds(deletedTournamentIds);
+  }, [deletedTournamentIds]);
+
   // Deduplicated, permanent tournament list: Firestore persistent store + backend live details
-  // Never auto-creates or resurrects tournaments; keyed strictly by numeric id.
+  // Strictly excludes deleted tournament IDs so deleted tournaments never resurrect.
   const tournaments = useMemo(() => {
+    const deletedSet = new Set<number>(deletedTournamentIds);
     const byId = new Map<number, Tournament>();
     for (const ct of cloudTournaments) {
-      if (ct && Number.isFinite(ct.id) && ct.id > 0) {
+      if (ct && Number.isFinite(ct.id) && ct.id > 0 && !deletedSet.has(ct.id)) {
         byId.set(ct.id, ct);
       }
     }
     for (const at of apiTournaments) {
-      if (at && Number.isFinite(at.id) && at.id > 0) {
+      if (at && Number.isFinite(at.id) && at.id > 0 && !deletedSet.has(at.id)) {
         const existing = byId.get(at.id);
         byId.set(at.id, existing ? { ...existing, ...at } : at);
       }
     }
     if (byId.size === 0 && offlineFallbackTournaments.length > 0) {
       for (const ot of offlineFallbackTournaments) {
-        if (ot && Number.isFinite(ot.id) && ot.id > 0) {
+        if (ot && Number.isFinite(ot.id) && ot.id > 0 && !deletedSet.has(ot.id)) {
           byId.set(ot.id, ot);
         }
       }
     }
     return Array.from(byId.values()).sort((a, b) => b.id - a.id);
-  }, [cloudTournaments, apiTournaments, offlineFallbackTournaments]);
+  }, [cloudTournaments, apiTournaments, offlineFallbackTournaments, deletedTournamentIds]);
 
-  // Read-only Firestore listener: keeps tournament records synced across reloads and deployments
+  // Read-only Firestore listeners: keeps tournament records & permanent policy synced
   useEffect(() => {
-    const unsubscribe = subscribeTournamentsFromFirestore(
+    const unsubscribeTours = subscribeTournamentsFromFirestore(
       (list) => {
         setCloudTournaments((prev) => (sameJson(prev, list) ? prev : list));
       },
@@ -254,7 +275,17 @@ export default function App() {
         console.warn('Firestore tournament listener notice:', err.message);
       }
     );
-    return () => unsubscribe();
+    const unsubscribePolicy = subscribeTournamentPolicyFromFirestore((policy) => {
+      if (Array.isArray(policy.deletedTournamentIds)) {
+        setCloudDeletedIds((prev) =>
+          sameJson(prev, policy.deletedTournamentIds) ? prev : policy.deletedTournamentIds
+        );
+      }
+    });
+    return () => {
+      unsubscribeTours();
+      unsubscribePolicy();
+    };
   }, []);
 
   const liveTournaments = useMemo(() => {
@@ -265,10 +296,10 @@ export default function App() {
   }, [tournaments, nowMs]);
 
   useEffect(() => {
-    if (tournaments.length > 0) {
+    if (hasLoadedApi || tournaments.length > 0) {
       saveCachedTournaments(tournaments);
     }
-  }, [tournaments]);
+  }, [tournaments, hasLoadedApi]);
 
   const liveSelectedTournament = useMemo(() => {
     if (!selectedTournament) return null;
@@ -284,7 +315,9 @@ export default function App() {
     lastPublicSyncRef.current = Date.now();
     try {
       const [tourRes, annRes, channelRes, videoRes, lbRes] = await Promise.all([
-        apiRequest<{ tournaments: Tournament[] }>('/api/tournaments', { token: authToken }),
+        apiRequest<{ tournaments: Tournament[]; deletedTournamentIds?: number[] }>('/api/tournaments', {
+          token: authToken,
+        }),
         apiRequest<{ announcements: AnnouncementRecord[] }>('/api/announcements').catch(() => null),
         apiRequest<{ paymentChannels: PaymentChannel[] }>('/api/payment-channels').catch(() => null),
         apiRequest<{ videos: YouTubeVideoRecord[] }>('/api/videos').catch(() => null),
@@ -295,8 +328,13 @@ export default function App() {
 
       let leaderboardDataChanged = false;
       const nextApiTournaments = Array.isArray(tourRes.tournaments) ? tourRes.tournaments : [];
+      const nextDeletedIds = Array.isArray(tourRes.deletedTournamentIds)
+        ? tourRes.deletedTournamentIds
+        : [];
 
+      setHasLoadedApi(true);
       setOfflineFallbackTournaments([]);
+      setApiDeletedIds((prev) => (sameJson(prev, nextDeletedIds) ? prev : nextDeletedIds));
       setApiTournaments((prev) => {
         if (sameJson(prev, nextApiTournaments)) return prev;
         leaderboardDataChanged = true;
@@ -335,8 +373,10 @@ export default function App() {
         );
       }
 
+      const deletedSet = new Set(nextDeletedIds);
       setSelectedTournament((prev) => {
         if (!prev) return null;
+        if (deletedSet.has(prev.id)) return null;
         const found = nextApiTournaments.find((t) => t.id === prev.id);
         if (!found) return prev;
         return sameJson(prev, found) ? prev : found;

@@ -204,6 +204,11 @@ export function initDatabase(): void {
       value TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS deleted_tournaments (
+      tournament_id INTEGER PRIMARY KEY,
+      deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS lucky_draw_entries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -340,6 +345,12 @@ export function initDatabase(): void {
   // Automatic tournament/announcement creation is permanently disabled.
   // Only the Admin can manually create, edit, or delete tournaments.
   db.prepare("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('auto_seed_disabled', 'true')").run();
+  db.prepare(
+    "INSERT OR IGNORE INTO app_meta (key, value) VALUES ('auto_tournament_creation_disabled', 'true')"
+  ).run();
+  db.prepare(
+    "INSERT OR IGNORE INTO app_meta (key, value) VALUES ('manual_admin_only_tournaments', 'true')"
+  ).run();
 
   recalculateAllUserPoints();
 }
