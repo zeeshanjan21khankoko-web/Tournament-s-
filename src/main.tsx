@@ -3,14 +3,8 @@ import { registerSW } from 'virtual:pwa-register';
 import App from './App.tsx';
 import './index.css';
 
-if (import.meta.env.PROD) {
-  registerSW({ immediate: false });
-} else if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-  navigator.serviceWorker.getRegistrations().then((registrations) => {
-    for (const registration of registrations) {
-      registration.unregister().catch(() => {});
-    }
-  }).catch(() => {});
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  registerSW({ immediate: true });
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

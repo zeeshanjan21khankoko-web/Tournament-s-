@@ -11,16 +11,22 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       VitePWA({
-        registerType: 'prompt',
-        includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png'],
+        registerType: 'autoUpdate',
+        includeAssets: [
+          'favicon.ico',
+          'apple-touch-icon.png',
+          'pwa-192x192.png',
+          'pwa-512x512.png',
+          'pwa-maskable-512x512.png',
+        ],
         manifest: {
           id: '/',
           name: 'FREE FIRE TOURNAMENT 09',
-          short_name: 'FF Tourney 09',
+          short_name: 'FF Tourney09',
           description:
             'Free Fire Tournament 09 - Join Free Fire Tournaments, Register Your Team and Win Prizes.',
-          theme_color: '#04110A',
-          background_color: '#04110A',
+          theme_color: '#0A0E17',
+          background_color: '#0A0E17',
           display: 'standalone',
           orientation: 'portrait',
           start_url: '/',
@@ -96,7 +102,9 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: false,
+          enabled: true,
+          type: 'module',
+          navigateFallback: 'index.html',
         },
       }),
       // Copies src/assets into dist/ so root-relative URLs like

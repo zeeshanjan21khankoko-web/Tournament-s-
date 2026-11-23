@@ -169,6 +169,67 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+function findAvailableApk(): { filePath: string; fileName: string; sizeBytes: number } | null {
+  const candidateDirs = [
+    path.resolve(process.cwd(), 'public', 'downloads'),
+    path.resolve(process.cwd(), 'android', 'app', 'build', 'outputs', 'apk', 'release'),
+    path.resolve(process.cwd(), 'android', 'app', 'build', 'outputs', 'apk', 'debug'),
+  ];
+
+  for (const dir of candidateDirs) {
+    try {
+      if (!fs.existsSync(dir)) continue;
+      const entries = fs.readdirSync(dir);
+      const apkFiles = entries
+        .filter((name) => name.toLowerCase().endsWith('.apk') && !name.startsWith('.'))
+        .sort();
+      for (const fileName of apkFiles) {
+        const fullPath = path.join(dir, fileName);
+        const stat = fs.statSync(fullPath);
+        if (stat.isFile() && stat.size > 100 * 1024) {
+          return {
+            filePath: fullPath,
+            fileName,
+            sizeBytes: stat.size,
+          };
+        }
+      }
+    } catch {
+      // Ignore unreadable directories
+    }
+  }
+  return null;
+}
+
+app.get('/api/app-download/status', (_req: Request, res: Response) => {
+  const apk = findAvailableApk();
+  res.json({
+    apkAvailable: Boolean(apk),
+    fileName: apk ? apk.fileName : null,
+    sizeBytes: apk ? apk.sizeBytes : null,
+    downloadUrl: apk ? '/api/app-download/apk' : null,
+    appName: 'FREE FIRE TOURNAMENT 09',
+    shortName: 'FF Tourney09',
+    iconUrl: '/pwa-192x192.png',
+    installMode: apk ? 'apk_and_pwa' : 'pwa',
+  });
+});
+
+app.get('/api/app-download/apk', (_req: Request, res: Response) => {
+  const apk = findAvailableApk();
+  if (!apk) {
+    res.status(404).json({
+      error: 'No Android APK file is hosted on this server. Use Install App (PWA) for Home Screen installation.',
+    });
+    return;
+  }
+  const safeName = path.basename(apk.fileName).replace(/[^A-Za-z0-9._-]/g, '_');
+  res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+  res.setHeader('Content-Length', String(apk.sizeBytes));
+  res.sendFile(apk.filePath);
+});
+
 app.get('/api/payment-channels', (_req: Request, res: Response) => {
   res.json({ paymentChannels: PAYMENT_CHANNELS });
 });

@@ -31,6 +31,7 @@ import {
   getYouTubeThumbnailUrl,
 } from '../lib/api';
 import { PrizeBreakdownStrip, WinnersPodium } from './WinnersPodium';
+import { DownloadTournamentAppButton } from './PWAInstallBanner';
 import type {
   AnnouncementRecord,
   LeaderboardEntry,
@@ -357,6 +358,11 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           <Gift className="w-5 h-5" />
           <span>Lucky Draw</span>
         </motion.button>
+      </section>
+
+      {/* 3b. Separate Download Tournament App Section (Android APK if available, else PWA Install) */}
+      <section aria-label="Download Tournament App">
+        <DownloadTournamentAppButton variant="card" />
       </section>
 
       {/* 4. Upcoming Matches Section (Matches Screenshot 1) */}

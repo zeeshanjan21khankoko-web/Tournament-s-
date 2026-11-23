@@ -26,7 +26,7 @@ import {
   formatShortDate,
 } from './lib/api';
 import { loadCachedTournaments, saveCachedTournaments } from './lib/offlineCache';
-import { OfflineIndicator } from './components/PWAInstallBanner';
+import { DownloadTournamentAppButton, OfflineIndicator } from './components/PWAInstallBanner';
 import { AuthView } from './components/AuthView';
 import { HomeDashboard } from './components/HomeDashboard';
 import { TournamentsView } from './components/TournamentsView';
@@ -647,8 +647,9 @@ export default function App() {
             )}
           </nav>
 
-          {/* Right Actions (Bell on Home + Admin chip if admin + Rs. Balance Pill) */}
+          {/* Right Actions (Bell on Home + Download App + Admin chip if admin + Rs. Balance Pill) */}
           <div className="flex items-center gap-2 shrink-0">
+            <DownloadTournamentAppButton variant="header" className="hidden sm:inline-flex" />
             {activeTab === 'home' && (
               <button
                 type="button"
