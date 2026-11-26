@@ -10,6 +10,7 @@ import {
   getDefaultPktSchedule,
   addHoursToPktParts,
 } from '../../shared/pktTime';
+import { auth } from './firebase';
 
 export const KELLY_HERO_ARTWORK = '/src/assets/images/kelly_hero_banner_1795312122819.jpg';
 export const KELLY_TOURNAMENT_ARTWORK = '/src/assets/images/kelly_tournament_banner_1795312123415.jpg';
@@ -130,6 +131,12 @@ export async function apiRequest<T>(
   }
   if (options.token) {
     headers['Authorization'] = `Bearer ${options.token}`;
+  }
+  if (!headers['X-Firebase-Id-Token'] && auth.currentUser) {
+    const fbIdToken = await auth.currentUser.getIdToken().catch(() => '');
+    if (fbIdToken) {
+      headers['X-Firebase-Id-Token'] = fbIdToken;
+    }
   }
 
   const res = await fetch(path, {

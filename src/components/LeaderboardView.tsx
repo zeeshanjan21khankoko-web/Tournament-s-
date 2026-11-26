@@ -119,15 +119,15 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
             <span>Top Players</span>
           </h1>
           <div>
-            <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#0D1320]/85 border border-[#FACC15]/30 text-xs font-semibold text-slate-200">
-              <span className="w-2 h-2 rounded-full bg-[#FACC15]" />
+            <span className="inline-flex flex-wrap items-center justify-center gap-1.5 sm:gap-2 max-w-full px-3 sm:px-4 py-1.5 rounded-full bg-[#0D1320]/85 border border-[#FACC15]/30 text-xs font-semibold text-slate-200">
+              <span className="w-2 h-2 rounded-full bg-[#FACC15] shrink-0" />
               <span>Your Rank</span>
               <span className="font-display font-extrabold text-[#FACC15] tabular-nums">
                 {myRank > 0 ? `#${myRank}` : '--'}
               </span>
               <span className="text-slate-400">·</span>
               <span className="tabular-nums text-slate-300">{myPoints} pts</span>
-              <span className="w-2 h-2 rounded-full bg-[#FACC15]" />
+              <span className="w-2 h-2 rounded-full bg-[#FACC15] shrink-0" />
             </span>
           </div>
         </div>
@@ -296,14 +296,14 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
 
       {/* 3. | All Rankings List (Matches Screenshot 5) */}
       <section className="space-y-3.5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-3">
           <h2 className="font-display text-lg font-extrabold text-white flex items-center gap-2.5">
             <span className="w-1 h-5 rounded-full bg-[#FACC15] inline-block" />
             <span>All Rankings</span>
           </h2>
 
-          <div className="flex items-center gap-3 ml-auto">
-            <div className="relative w-44 sm:w-56">
+          <div className="flex items-center gap-3 w-full sm:w-auto sm:ml-auto">
+            <div className="relative w-full sm:w-56">
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
@@ -311,10 +311,10 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search player..."
                 aria-label="Search leaderboard player"
-                className="w-full min-h-[36px] pl-8 pr-3 py-1 bg-[#131A29] border border-white/[0.08] rounded-xl text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-[#FACC15]"
+                className="w-full min-h-[38px] pl-8 pr-3 py-1 bg-[#131A29] border border-white/[0.08] rounded-xl text-xs sm:text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-[#FACC15]"
               />
             </div>
-            <span className="text-xs text-slate-400 hidden sm:inline">
+            <span className="text-xs text-slate-400 hidden sm:inline whitespace-nowrap">
               Top {Math.min(100, filteredEntries.length)} players
             </span>
           </div>
@@ -349,13 +349,13 @@ export const LeaderboardView: React.FC<LeaderboardViewProps> = ({
               return (
                 <div
                   key={p.user_id}
-                  className={`rounded-2xl border px-3.5 sm:px-4 py-3 flex items-center justify-between gap-3 transition-colors ${
+                  className={`min-w-0 overflow-hidden rounded-2xl border px-3 sm:px-4 py-3 flex items-center justify-between gap-2.5 sm:gap-3 transition-colors ${
                     isMe
                       ? 'bg-[#1A2438] border-[#FACC15]/55'
                       : 'bg-[#131A29] border-white/[0.08] hover:border-white/[0.16]'
                   }`}
                 >
-                  <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
                     {/* Rank Square Badge */}
                     {p.rank === 1 ? (
                       <div className="w-10 h-10 rounded-xl bg-[#FACC15] text-[#0A0E17] flex items-center justify-center shrink-0">

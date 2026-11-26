@@ -39,7 +39,52 @@ const DEFAULT_DOWNLOAD_STATUS: AppDownloadStatus = {
   installMode: 'pwa',
 };
 
-// Module-level capture so early beforeinstallprompt events are never missed
+const PWA_INSTALLED_STORAGE_KEY = 'ff09_pwa_installed';
+
+interface NavigatorWithPWA extends Navigator {
+  standalone?: boolean;
+  getInstalledRelatedApps?: () => Promise<Array<{ id?: string; platform?: string; url?: string }>>;
+}
+
+function readInstalledFlag(): boolean {
+  try {
+    return typeof window !== 'undefined' && window.localStorage.getItem(PWA_INSTALLED_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeInstalledFlag(installed: boolean): void {
+  try {
+    if (typeof window === 'undefined') return;
+    if (installed) {
+      window.localStorage.setItem(PWA_INSTALLED_STORAGE_KEY, '1');
+    } else {
+      window.localStorage.removeItem(PWA_INSTALLED_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage quota or private-mode restrictions
+  }
+}
+
+export function detectStandaloneMode(): boolean {
+  if (typeof window === 'undefined') return false;
+  const nav = window.navigator as NavigatorWithPWA;
+  const displayModes = ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay'];
+  const matchesDisplayMode = displayModes.some((mode) => {
+    try {
+      return window.matchMedia(`(display-mode: ${mode})`).matches;
+    } catch {
+      return false;
+    }
+  });
+  const isIOSStandalone = nav.standalone === true;
+  const isAndroidAppReferrer =
+    typeof document !== 'undefined' && document.referrer.startsWith('android-app://');
+  return matchesDisplayMode || isIOSStandalone || isAndroidAppReferrer;
+}
+
+// Module-level capture so early beforeinstallprompt / appinstalled events are never missed
 let sharedDeferredPrompt: BeforeInstallPromptEvent | null = null;
 let sharedIsInstalled = false;
 const promptListeners = new Set<() => void>();
@@ -48,22 +93,53 @@ function notifyPromptListeners() {
   promptListeners.forEach((fn) => fn());
 }
 
+async function probeInstalledRelatedApps(): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  const nav = window.navigator as NavigatorWithPWA;
+  if (typeof nav.getInstalledRelatedApps !== 'function') return false;
+  try {
+    const related = await nav.getInstalledRelatedApps();
+    if (Array.isArray(related) && related.length > 0) {
+      sharedIsInstalled = true;
+      sharedDeferredPrompt = null;
+      writeInstalledFlag(true);
+      notifyPromptListeners();
+      return true;
+    }
+  } catch {
+    // Ignore unsupported context errors
+  }
+  return false;
+}
+
 if (typeof window !== 'undefined') {
-  sharedIsInstalled =
-    window.matchMedia('(display-mode: standalone)').matches ||
-    (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+  const standalone = detectStandaloneMode();
+  if (standalone) {
+    sharedIsInstalled = true;
+    writeInstalledFlag(true);
+  } else {
+    sharedIsInstalled = readInstalledFlag();
+  }
 
   window.addEventListener('beforeinstallprompt', (e: Event) => {
     e.preventDefault();
     sharedDeferredPrompt = e as BeforeInstallPromptEvent;
+    // Chrome only emits beforeinstallprompt when the PWA is NOT currently installed
+    if (!detectStandaloneMode()) {
+      sharedIsInstalled = false;
+      writeInstalledFlag(false);
+    }
     notifyPromptListeners();
   });
 
   window.addEventListener('appinstalled', () => {
     sharedIsInstalled = true;
     sharedDeferredPrompt = null;
+    writeInstalledFlag(true);
     notifyPromptListeners();
   });
+
+  void probeInstalledRelatedApps();
 }
 
 function formatFileSize(bytes: number | null): string {
@@ -77,7 +153,9 @@ export function usePWAInstall() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(
     () => sharedDeferredPrompt
   );
-  const [isInstalled, setIsInstalled] = useState<boolean>(() => sharedIsInstalled);
+  const [isInstalled, setIsInstalled] = useState<boolean>(
+    () => sharedIsInstalled || detectStandaloneMode()
+  );
   const [isIOS, setIsIOS] = useState(false);
   const [isAndroid, setIsAndroid] = useState(false);
   const [isInIframe, setIsInIframe] = useState(false);
@@ -110,16 +188,18 @@ export function usePWAInstall() {
 
   useEffect(() => {
     const sync = () => {
+      const standalone = detectStandaloneMode();
+      if (standalone) {
+        sharedIsInstalled = true;
+        writeInstalledFlag(true);
+      }
       setDeferredPrompt(sharedDeferredPrompt);
-      setIsInstalled(
-        sharedIsInstalled ||
-          window.matchMedia('(display-mode: standalone)').matches ||
-          (window.navigator as unknown as { standalone?: boolean }).standalone === true
-      );
+      setIsInstalled(standalone || sharedIsInstalled || readInstalledFlag());
     };
 
     sync();
     promptListeners.add(sync);
+    void probeInstalledRelatedApps();
 
     const ua = window.navigator.userAgent.toLowerCase();
     setIsIOS(/iphone|ipad|ipod/.test(ua));
@@ -135,12 +215,31 @@ export function usePWAInstall() {
     const onMediaChange = (ev: MediaQueryListEvent) => {
       if (ev.matches) {
         sharedIsInstalled = true;
+        sharedDeferredPrompt = null;
+        writeInstalledFlag(true);
         sync();
       }
     };
     if (typeof media.addEventListener === 'function') {
       media.addEventListener('change', onMediaChange);
     }
+
+    const onVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        sync();
+        void probeInstalledRelatedApps();
+      }
+    };
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key === PWA_INSTALLED_STORAGE_KEY) {
+        sharedIsInstalled = ev.newValue === '1';
+        sync();
+      }
+    };
+
+    window.addEventListener('focus', onVisibilityOrFocus);
+    document.addEventListener('visibilitychange', onVisibilityOrFocus);
+    window.addEventListener('storage', onStorage);
 
     refreshApkStatus();
 
@@ -149,22 +248,27 @@ export function usePWAInstall() {
       if (typeof media.removeEventListener === 'function') {
         media.removeEventListener('change', onMediaChange);
       }
+      window.removeEventListener('focus', onVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', onVisibilityOrFocus);
+      window.removeEventListener('storage', onStorage);
     };
   }, [refreshApkStatus]);
 
-  const install = async () => {
+  const install = useCallback(async () => {
     const activePrompt = sharedDeferredPrompt || deferredPrompt;
     if (!activePrompt) return false;
     await activePrompt.prompt();
     const { outcome } = await activePrompt.userChoice;
+    sharedDeferredPrompt = null;
     if (outcome === 'accepted') {
       sharedIsInstalled = true;
-      sharedDeferredPrompt = null;
+      writeInstalledFlag(true);
       notifyPromptListeners();
       return true;
     }
+    notifyPromptListeners();
     return false;
-  };
+  }, [deferredPrompt]);
 
   return {
     isInstallable: Boolean(deferredPrompt || sharedDeferredPrompt),
@@ -221,13 +325,19 @@ export const DownloadAppModal: React.FC<DownloadAppModalProps> = ({ open, onClos
   const [installFeedback, setInstallFeedback] = useState<string>('');
 
   useEffect(() => {
+    if (isInstalled && open) {
+      onClose();
+    }
+  }, [isInstalled, open, onClose]);
+
+  useEffect(() => {
     if (open) {
       setInstallFeedback('');
       refreshApkStatus();
     }
   }, [open, refreshApkStatus]);
 
-  if (!open) return null;
+  if (!open || isInstalled) return null;
 
   const handlePWAInstall = async () => {
     setInstalling(true);
@@ -488,20 +598,43 @@ export const DownloadTournamentAppButton: React.FC<DownloadTournamentAppButtonPr
   variant = 'button',
   className = '',
 }) => {
-  const { isInstalled, apkStatus } = usePWAInstall();
+  const { isInstalled, isInstallable, apkStatus, install } = usePWAInstall();
   const [modalOpen, setModalOpen] = useState(false);
+  const [installing, setInstalling] = useState(false);
+
+  // Completely hide the Download App button once installed (standalone or detected via Chrome)
+  if (isInstalled) {
+    return null;
+  }
+
+  const handleSmartInstallClick = async () => {
+    if (isInstallable && !apkStatus.apkAvailable) {
+      setInstalling(true);
+      try {
+        await install();
+      } catch {
+        setModalOpen(true);
+      } finally {
+        setInstalling(false);
+      }
+      return;
+    }
+    setModalOpen(true);
+  };
 
   if (variant === 'header') {
     return (
       <>
         <button
           type="button"
-          onClick={() => setModalOpen(true)}
-          className={`min-h-[34px] px-3 py-1 rounded-full bg-[#131A29] border border-[#FACC15]/45 hover:border-[#FACC15] text-xs font-bold text-[#FACC15] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${className}`}
+          disabled={installing}
+          onClick={handleSmartInstallClick}
+          data-testid="download-tournament-app-btn"
+          className={`min-h-[34px] px-3 py-1 rounded-full bg-[#131A29] border border-[#FACC15]/45 hover:border-[#FACC15] text-xs font-bold text-[#FACC15] inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-70 ${className}`}
         >
           <Download className="w-3.5 h-3.5 shrink-0" />
-          <span className="hidden xl:inline">Download Tournament App</span>
-          <span className="xl:hidden">Get App</span>
+          <span className="hidden xl:inline">{installing ? 'Installing...' : 'Download Tournament App'}</span>
+          <span className="xl:hidden">{installing ? 'Installing...' : 'Get App'}</span>
         </button>
         <DownloadAppModal open={modalOpen} onClose={() => setModalOpen(false)} />
       </>
@@ -512,9 +645,10 @@ export const DownloadTournamentAppButton: React.FC<DownloadTournamentAppButtonPr
     return (
       <>
         <div
-          className={`rounded-2xl bg-gradient-to-r from-[#141D2F] via-[#131A29] to-[#1A1A14] border border-[#FACC15]/30 p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ff-card-glow ${className}`}
+          data-testid="download-tournament-app-card"
+          className={`min-w-0 overflow-hidden rounded-2xl bg-gradient-to-r from-[#141D2F] via-[#131A29] to-[#1A1A14] border border-[#FACC15]/30 p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ff-card-glow ${className}`}
         >
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
             <img
               src={apkStatus.iconUrl || '/pwa-192x192.png'}
               alt={apkStatus.appName}
@@ -525,22 +659,22 @@ export const DownloadTournamentAppButton: React.FC<DownloadTournamentAppButtonPr
                 {apkStatus.appName}
               </div>
               <div className="text-[11px] text-slate-300 truncate">
-                {isInstalled
-                  ? 'Installed on your Home Screen'
-                  : apkStatus.apkAvailable
-                    ? 'Android APK & Home Screen App ready'
-                    : 'Install on Android Home Screen (Standalone App)'}
+                {apkStatus.apkAvailable
+                  ? 'Android APK & Home Screen App ready'
+                  : 'Install on Android Home Screen (Standalone App)'}
               </div>
             </div>
           </div>
 
           <button
             type="button"
-            onClick={() => setModalOpen(true)}
-            className="ff-btn-ember w-full sm:w-auto min-h-[42px] px-4 py-2 rounded-xl font-display text-xs sm:text-sm font-extrabold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
+            disabled={installing}
+            onClick={handleSmartInstallClick}
+            data-testid="download-tournament-app-btn"
+            className="ff-btn-ember w-full sm:w-auto min-h-[42px] px-4 py-2 rounded-xl font-display text-xs sm:text-sm font-extrabold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-70"
           >
             <Download className="w-4 h-4 shrink-0" />
-            <span>Download Tournament App</span>
+            <span>{installing ? 'Installing...' : 'Download Tournament App'}</span>
           </button>
         </div>
         <DownloadAppModal open={modalOpen} onClose={() => setModalOpen(false)} />
@@ -552,8 +686,10 @@ export const DownloadTournamentAppButton: React.FC<DownloadTournamentAppButtonPr
     <>
       <button
         type="button"
-        onClick={() => setModalOpen(true)}
-        className={`ff-btn-ember min-h-[44px] px-4 py-2.5 rounded-xl font-display text-xs sm:text-sm font-extrabold inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 ${className}`}
+        disabled={installing}
+        onClick={handleSmartInstallClick}
+        data-testid="download-tournament-app-btn"
+        className={`ff-btn-ember min-h-[44px] px-4 py-2.5 rounded-xl font-display text-xs sm:text-sm font-extrabold inline-flex items-center justify-center gap-2 whitespace-nowrap shrink-0 disabled:opacity-70 ${className}`}
       >
         <img
           src={apkStatus.iconUrl || '/pwa-192x192.png'}
@@ -561,7 +697,7 @@ export const DownloadTournamentAppButton: React.FC<DownloadTournamentAppButtonPr
           className="w-5 h-5 rounded-md object-cover border border-[#0A0E17]/30 shrink-0"
         />
         <Download className="w-4 h-4 shrink-0" />
-        <span>Download Tournament App</span>
+        <span>{installing ? 'Installing...' : 'Download Tournament App'}</span>
       </button>
       <DownloadAppModal open={modalOpen} onClose={() => setModalOpen(false)} />
     </>
@@ -585,7 +721,7 @@ export const OfflineIndicator: React.FC = () => {
   return (
     <div
       role="status"
-      className="bg-[#FACC15]/15 border-b border-[#FACC15]/35 px-4 py-2 text-xs font-medium text-[#FDE047] flex items-center justify-center gap-2"
+      className="w-full bg-[#FACC15]/15 border-b border-[#FACC15]/35 px-3 sm:px-4 py-2 text-xs font-medium text-[#FDE047] flex flex-wrap items-center justify-center text-center gap-2"
     >
       <WifiOff className="w-3.5 h-3.5 shrink-0" />
       <span>Offline Mode — Showing cached tournament schedule. Live wallet actions require connection.</span>

@@ -77,6 +77,10 @@
         "sqlite_id": {
           "type": "integer"
         },
+        "firebase_uid": {
+          "type": "string",
+          "maxLength": 128
+        },
         "email": {
           "type": "string",
           "minLength": 3,
@@ -111,14 +115,37 @@
         "wallet_balance": {
           "type": "integer"
         },
+        "pending_withdrawal": {
+          "type": "integer"
+        },
+        "total_deposited": {
+          "type": "integer"
+        },
+        "total_withdrawn": {
+          "type": "integer"
+        },
+        "total_won": {
+          "type": "integer"
+        },
         "matches_played": {
           "type": "integer"
         },
         "wins": {
           "type": "integer"
         },
+        "kills": {
+          "type": "integer"
+        },
         "points": {
           "type": "integer"
+        },
+        "last_lucky_draw_pkt": {
+          "type": "string",
+          "maxLength": 16
+        },
+        "last_lucky_draw_at": {
+          "type": "string",
+          "format": "date-time"
         },
         "created_at": {
           "type": "string",
@@ -269,15 +296,25 @@
       "description": "Participant slot registration inside a tournament.",
       "type": "object",
       "properties": {
+        "tournament_id": {
+          "type": "integer"
+        },
         "user_uid": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "sqlite_user_id": {
+          "type": "integer"
+        },
         "player_id": {
           "type": "string",
           "minLength": 3,
+          "maxLength": 32
+        },
+        "username": {
+          "type": "string",
           "maxLength": 32
         },
         "in_game_name": {
@@ -303,6 +340,134 @@
         }
       },
       "required": ["user_uid", "player_id", "in_game_name", "in_game_id", "slot_number", "status", "registered_at"]
+    },
+    "Deposit": {
+      "title": "Deposit",
+      "description": "User deposit request and admin verification record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "deposit_key": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "user_uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sqlite_user_id": { "type": "integer" },
+        "player_id": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "username": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "amount": { "type": "integer" },
+        "method": { "type": "string", "enum": ["jazzcash", "easypaisa"] },
+        "transaction_ref": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "sender_account": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "has_screenshot": { "type": "boolean" },
+        "screenshot_preview": { "type": "string", "maxLength": 450000 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "admin_note": { "type": "string", "maxLength": 250 },
+        "tx_code": { "type": "string", "maxLength": 64 },
+        "reviewed_at": { "type": "string", "maxLength": 64 },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "deposit_key", "user_uid", "player_id", "username", "email", "amount",
+        "method", "transaction_ref", "sender_account", "status", "admin_note", "created_at"
+      ]
+    },
+    "Withdrawal": {
+      "title": "Withdrawal",
+      "description": "User withdrawal request and payout audit record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "withdrawal_key": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "user_uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sqlite_user_id": { "type": "integer" },
+        "player_id": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "username": { "type": "string", "minLength": 2, "maxLength": 32 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "amount": { "type": "integer" },
+        "method": { "type": "string", "enum": ["jazzcash", "easypaisa", "bank_account"] },
+        "bank_name": { "type": "string", "maxLength": 64 },
+        "account_title": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "account_number": { "type": "string", "minLength": 6, "maxLength": 34 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "paid"] },
+        "admin_note": { "type": "string", "maxLength": 250 },
+        "tx_code": { "type": "string", "maxLength": 64 },
+        "reviewed_at": { "type": "string", "maxLength": 64 },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "withdrawal_key", "user_uid", "player_id", "username", "email", "amount",
+        "method", "bank_name", "account_title", "account_number", "status", "admin_note", "created_at"
+      ]
+    },
+    "LedgerTransaction": {
+      "title": "LedgerTransaction",
+      "description": "Immutable wallet transaction ledger entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "tx_code": { "type": "string", "minLength": 4, "maxLength": 64 },
+        "user_uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sqlite_user_id": { "type": "integer" },
+        "player_id": { "type": "string", "maxLength": 32 },
+        "username": { "type": "string", "maxLength": 32 },
+        "type": {
+          "type": "string",
+          "enum": [
+            "deposit", "withdrawal", "entry_fee", "prize_win", "refund",
+            "admin_adjustment", "transfer_out", "transfer_in", "lucky_draw"
+          ]
+        },
+        "amount": { "type": "integer" },
+        "direction": { "type": "string", "enum": ["credit", "debit"] },
+        "balance_after": { "type": "integer" },
+        "status": { "type": "string", "enum": ["pending", "approved", "paid", "completed", "rejected"] },
+        "reference_id": { "type": "string", "maxLength": 64 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "tx_code", "user_uid", "type", "amount", "direction",
+        "balance_after", "status", "reference_id", "description", "created_at"
+      ]
+    },
+    "LuckyDrawEntry": {
+      "title": "LuckyDrawEntry",
+      "description": "Daily lucky draw reward claim entry.",
+      "type": "object",
+      "properties": {
+        "user_uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sqlite_user_id": { "type": "integer" },
+        "draw_date_pkt": { "type": "string", "minLength": 10, "maxLength": 10 },
+        "prize_amount": { "type": "integer" },
+        "prize_label": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["user_uid", "draw_date_pkt", "prize_amount", "prize_label", "created_at"]
+    },
+    "TeamRegistration": {
+      "title": "TeamRegistration",
+      "description": "Squad or player tournament registration record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "registration_code": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "tournament_id": { "type": "integer" },
+        "user_uid": { "type": "string", "maxLength": 128 },
+        "sqlite_user_id": { "type": "integer" },
+        "leader_name": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "freefire_uid": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "whatsapp_number": { "type": "string", "minLength": 6, "maxLength": 24 },
+        "team_name": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "squad_type": { "type": "string", "enum": ["Solo", "Duo", "Squad"] },
+        "teammates": { "type": "string", "maxLength": 500 },
+        "payment_method": { "type": "string", "enum": ["free", "wallet", "jazzcash", "easypaisa"] },
+        "payment_ref": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "rejected"] },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "registration_code", "tournament_id", "leader_name", "freefire_uid",
+        "whatsapp_number", "team_name", "squad_type", "payment_method", "payment_ref", "status", "created_at"
+      ]
     },
     "Announcement": {
       "title": "Announcement",
@@ -424,11 +589,31 @@
     },
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserPrivateProfile" },
-      "description": "Private PII-isolated user profile documents."
+      "description": "Private PII-isolated user profile and authoritative wallet balance documents."
+    },
+    "/deposits/{depositId}": {
+      "schema": { "$ref": "#/entities/Deposit" },
+      "description": "Permanent deposit request and approval records."
+    },
+    "/withdrawals/{withdrawalId}": {
+      "schema": { "$ref": "#/entities/Withdrawal" },
+      "description": "Permanent withdrawal request and payout records."
+    },
+    "/transactions/{txCode}": {
+      "schema": { "$ref": "#/entities/LedgerTransaction" },
+      "description": "Permanent immutable financial transaction ledger."
+    },
+    "/lucky_draws/{drawKey}": {
+      "schema": { "$ref": "#/entities/LuckyDrawEntry" },
+      "description": "Daily lucky draw reward entries."
+    },
+    "/team_registrations/{registrationCode}": {
+      "schema": { "$ref": "#/entities/TeamRegistration" },
+      "description": "Team/squad registration records."
     },
     "/tournaments/{tournamentId}": {
       "schema": { "$ref": "#/entities/Tournament" },
-      "description": "Admin-managed tournament listings (public read, admin-only write)."
+      "description": "Admin-managed tournament listings (public read, admin-only write except atomic slot increment on verified player join)."
     },
     "/tournaments/{tournamentId}/secrets/{secretId}": {
       "schema": { "$ref": "#/entities/TournamentRoomSecret" },

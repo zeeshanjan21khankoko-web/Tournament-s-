@@ -1,5 +1,6 @@
 export interface UserProfile {
   id: number;
+  firebase_uid?: string;
   player_id: string;
   username: string;
   email: string;

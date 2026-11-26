@@ -6,6 +6,8 @@ import http from 'node:http';
 import path from 'node:path';
 import {
   db,
+  ensureAndReconcileWallet,
+  generateFirestoreRecordKey,
   generateRegistrationCode,
   generateTicketCode,
   generateTxCode,
@@ -19,12 +21,14 @@ import {
   clearSessionCookie,
   createPersistentSession,
   extractBearerUser,
+  extractFirebaseIdToken,
   getUserById,
   hashPassword,
   isAdminPasscodeConfigured,
   requireAdmin,
   requireAuth,
   resolveAuthToken,
+  revokeCookieSessionIfPresent,
   revokePersistentSession,
   setSessionCookie,
   signToken,
@@ -37,8 +41,24 @@ import {
   type TournamentStatus,
 } from './shared/pktTime.ts';
 import {
+  commitAdminDepositReviewToFirestore,
+  commitAdminPlayerChangeToFirestore,
+  commitAdminTournamentDeleteRefundsToFirestore,
+  commitAdminTournamentWinnersToFirestore,
+  commitAdminUserSyncToFirestore,
+  commitAdminWithdrawalReviewToFirestore,
+  commitDepositCreateToFirestore,
+  commitLuckyDrawToFirestore,
+  commitProfileUpdateToFirestore,
+  commitTeamRegistrationToFirestore,
+  commitTournamentJoinToFirestore,
+  commitTransferToFirestore,
+  commitWithdrawalCreateToFirestore,
   ensureTournamentInSqlite,
+  ensureUserDocInFirestore,
   getNextSafeTournamentId,
+  hydrateAllAdminStateFromFirestore,
+  hydrateUserAllStateFromFirestore,
   syncMissingTournamentsFromFirestore,
 } from './server/firestoreBridge.ts';
 
@@ -620,6 +640,7 @@ app.post('/api/team-registrations', async (req: Request, res: Response) => {
       let paymentMethod: 'free' | 'wallet' | 'jazzcash' | 'easypaisa';
       let regStatus: 'pending' | 'confirmed' = 'pending';
       let finalRef = paymentRef;
+      let walletTxCode: string | null = null;
 
       if (t.entry_fee === 0) {
         paymentMethod = 'free';
@@ -629,18 +650,19 @@ app.post('/api/team-registrations', async (req: Request, res: Response) => {
         if (!viewer) {
           return { status: 401, error: 'Sign in first to pay entry fee from your Wallet Balance.' };
         }
-        const wallet = db
-          .prepare('SELECT available_balance, pending_withdrawal FROM wallet_accounts WHERE user_id = ?')
-          .get(viewer.id) as { available_balance: number; pending_withdrawal: number } | undefined;
-        const available = wallet ? Math.max(0, wallet.available_balance - wallet.pending_withdrawal) : 0;
-        if (available < t.entry_fee) {
+        const wallet = ensureAndReconcileWallet(viewer.id);
+        const totalBal = wallet ? wallet.available_balance : 0;
+        const spendable = wallet
+          ? Math.max(0, wallet.available_balance - wallet.pending_withdrawal)
+          : 0;
+        if (spendable < t.entry_fee) {
           return {
             status: 400,
-            error: `Insufficient spendable balance. Required: PKR ${t.entry_fee}, Available: PKR ${available}.`,
+            error: `Insufficient spendable balance. Required: PKR ${t.entry_fee}, Available: PKR ${spendable}.`,
           };
         }
 
-        const nextBal = available - t.entry_fee;
+        const nextBal = totalBal - t.entry_fee;
         db.prepare('UPDATE users SET wallet_balance = ?, matches_played = matches_played + 1 WHERE id = ?').run(
           nextBal,
           viewer.id
@@ -648,11 +670,12 @@ app.post('/api/team-registrations', async (req: Request, res: Response) => {
         db.prepare(
           "UPDATE wallet_accounts SET available_balance = ?, updated_at = datetime('now') WHERE user_id = ?"
         ).run(nextBal, viewer.id);
+        walletTxCode = generateTxCode();
         db.prepare(
           `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
            VALUES (?, ?, 'entry_fee', ?, 'debit', ?, 'completed', ?, ?)`
         ).run(
-          generateTxCode(),
+          walletTxCode,
           viewer.id,
           t.entry_fee,
           nextBal,
@@ -722,7 +745,7 @@ app.post('/api/team-registrations', async (req: Request, res: Response) => {
         )
         .get(Number(info.lastInsertRowid));
 
-      return { status: 201, registration: created };
+      return { status: 201, registration: created, registrationCode: regCode, walletTxCode };
     }).immediate();
 
     if ('error' in result) {
@@ -731,6 +754,14 @@ app.post('/api/team-registrations', async (req: Request, res: Response) => {
     }
 
     recalculateAllUserPoints();
+    const fbToken = extractFirebaseIdToken(req);
+    if (viewer?.id && fbToken && result.registrationCode) {
+      await commitTeamRegistrationToFirestore({
+        registrationCode: result.registrationCode,
+        txCode: result.walletTxCode ?? null,
+        actorIdToken: fbToken,
+      }).catch(() => {});
+    }
     res.status(201).json({
       ok: true,
       registration: result.registration,
@@ -855,6 +886,7 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     }).immediate();
 
     const user = getUserById(userId)!;
+    revokeCookieSessionIfPresent(req);
     const sessionToken = createPersistentSession(user.id);
     setSessionCookie(req, res, sessionToken);
     const token = signToken(user.id, user.role);
@@ -895,6 +927,7 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
     }
 
     const user = getUserById(row.id)!;
+    revokeCookieSessionIfPresent(req);
     const sessionToken = createPersistentSession(user.id);
     setSessionCookie(req, res, sessionToken);
     const token = signToken(user.id, user.role);
@@ -939,19 +972,43 @@ app.post('/api/auth/firebase-google', async (req: Request, res: Response) => {
     }
 
     const identity = await verifyFirebaseGoogleIdToken(idToken);
+    const cleanEmail = identity.email.toLowerCase();
     const isBootstrappedAdmin =
-      identity.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+      cleanEmail === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+
+    // Hydrate permanent user balance, deposits, withdrawals, ledger, and tournament registrations from Firestore first
+    await hydrateUserAllStateFromFirestore(identity, idToken);
+    if (isBootstrappedAdmin) {
+      await hydrateAllAdminStateFromFirestore(idToken, true);
+    }
 
     const result = db.transaction(() => {
-      const existing = db
-        .prepare('SELECT id, role, is_blocked FROM users WHERE lower(email) = ?')
-        .get(identity.email.toLowerCase()) as
-        | { id: number; role: 'player' | 'admin'; is_blocked: number }
+      let existing = db
+        .prepare('SELECT id, firebase_uid, role, is_blocked FROM users WHERE firebase_uid = ?')
+        .get(identity.uid) as
+        | { id: number; firebase_uid: string; role: 'player' | 'admin'; is_blocked: number }
         | undefined;
+
+      if (!existing) {
+        existing = db
+          .prepare('SELECT id, firebase_uid, role, is_blocked FROM users WHERE lower(email) = ?')
+          .get(cleanEmail) as
+          | { id: number; firebase_uid: string; role: 'player' | 'admin'; is_blocked: number }
+          | undefined;
+      }
 
       if (existing) {
         if (existing.is_blocked === 1) {
           return { status: 403 as const, error: 'Your account is blocked. Contact an administrator.' };
+        }
+        if (existing.firebase_uid && existing.firebase_uid !== identity.uid) {
+          return {
+            status: 403 as const,
+            error: 'This email is permanently linked to a different Google UID.',
+          };
+        }
+        if (!existing.firebase_uid) {
+          db.prepare('UPDATE users SET firebase_uid = ? WHERE id = ?').run(identity.uid, existing.id);
         }
         if (isBootstrappedAdmin && existing.role !== 'admin') {
           db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(existing.id);
@@ -961,13 +1018,11 @@ app.post('/api/auth/firebase-google', async (req: Request, res: Response) => {
             existing.id
           );
         }
-        db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, 0)').run(
-          existing.id
-        );
+        ensureAndReconcileWallet(existing.id);
         return { userId: existing.id, isNew: false };
       }
 
-      const username = buildUniqueUsernameFromGoogle(identity.name, identity.email);
+      const username = buildUniqueUsernameFromGoogle(identity.name, cleanEmail);
       const playerId = generateUniquePlayerId();
       const randomPasswordHash = hashPassword(crypto.randomBytes(24).toString('hex'));
       const role: 'player' | 'admin' = isBootstrappedAdmin ? 'admin' : 'player';
@@ -975,10 +1030,10 @@ app.post('/api/auth/firebase-google', async (req: Request, res: Response) => {
 
       const info = db
         .prepare(
-          `INSERT INTO users (player_id, username, email, phone, password_hash, avatar_url, role, wallet_balance)
-           VALUES (?, ?, ?, '', ?, ?, ?, 0)`
+          `INSERT INTO users (firebase_uid, player_id, username, email, phone, password_hash, avatar_url, role, wallet_balance)
+           VALUES (?, ?, ?, ?, '', ?, ?, ?, 0)`
         )
-        .run(playerId, username, identity.email.toLowerCase(), randomPasswordHash, avatarUrl, role);
+        .run(identity.uid, playerId, username, cleanEmail, randomPasswordHash, avatarUrl, role);
 
       const newId = Number(info.lastInsertRowid);
       db.prepare('INSERT INTO wallet_accounts (user_id, available_balance) VALUES (?, 0)').run(newId);
@@ -993,7 +1048,10 @@ app.post('/api/auth/firebase-google', async (req: Request, res: Response) => {
       return;
     }
 
+    await ensureUserDocInFirestore(result.userId!, idToken).catch(() => {});
+
     const user = getUserById(result.userId!)!;
+    revokeCookieSessionIfPresent(req);
     const sessionToken = createPersistentSession(user.id);
     setSessionCookie(req, res, sessionToken);
     const token = signToken(user.id, user.role);
@@ -1077,6 +1135,7 @@ app.post('/api/auth/claim-admin', (req: Request, res: Response) => {
     }
 
     const user = getUserById(result.userId)!;
+    revokeCookieSessionIfPresent(req);
     const sessionToken = createPersistentSession(user.id);
     setSessionCookie(req, res, sessionToken);
     const token = signToken(user.id, 'admin');
@@ -1097,14 +1156,13 @@ app.post('/api/auth/logout', (req: Request, res: Response) => {
 });
 
 app.get('/api/auth/me', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-  const wallet = db
-    .prepare('SELECT * FROM wallet_accounts WHERE user_id = ?')
-    .get(req.user!.id);
-  const token = signToken(req.user!.id, req.user!.role);
-  res.json({ token, user: req.user, wallet });
+  const wallet = ensureAndReconcileWallet(req.user!.id);
+  const freshUser = getUserById(req.user!.id) || req.user!;
+  const token = signToken(freshUser.id, freshUser.role);
+  res.json({ token, user: freshUser, wallet });
 });
 
-app.patch('/api/auth/profile', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.patch('/api/auth/profile', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const username = typeof req.body.username === 'string' ? req.body.username.trim() : req.user!.username;
     const phone =
@@ -1143,6 +1201,10 @@ app.patch('/api/auth/profile', requireAuth, (req: AuthenticatedRequest, res: Res
       avatarChecked,
       req.user!.id
     );
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitProfileUpdateToFirestore(req.user!.id, fbToken).catch(() => {});
+    }
     res.json({ user: getUserById(req.user!.id) });
   } catch (err) {
     console.error('Profile update error:', err);
@@ -1325,6 +1387,10 @@ app.post('/api/tournaments/:id/join', requireAuth, async (req: AuthenticatedRequ
       return;
     }
 
+    const rawIdem = req.headers['idempotency-key'] ?? req.body?.idempotencyKey;
+    const idempotencyKey =
+      typeof rawIdem === 'string' ? rawIdem.trim().slice(0, 128) : '';
+
     await ensureTournamentInSqlite(tournamentId);
 
     const result = db.transaction(() => {
@@ -1355,17 +1421,24 @@ app.post('/api/tournaments/:id/join', requireAuth, async (req: AuthenticatedRequ
       }
 
       const already = db
-        .prepare('SELECT id FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?')
-        .get(tournamentId, req.user!.id);
+        .prepare('SELECT id, slot_number FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?')
+        .get(tournamentId, req.user!.id) as { id: number; slot_number: number } | undefined;
       if (already) return { status: 409, error: 'You are already registered in this tournament.' };
+
+      if (idempotencyKey) {
+        const dupIdem = db
+          .prepare('SELECT id FROM transactions WHERE idempotency_key = ?')
+          .get(idempotencyKey);
+        if (dupIdem) {
+          return { status: 409, error: 'Duplicate join request detected.' };
+        }
+      }
 
       if (t.filled_slots >= t.max_slots) {
         return { status: 400, error: 'Tournament slots are completely full.' };
       }
 
-      const wallet = db
-        .prepare('SELECT available_balance, pending_withdrawal FROM wallet_accounts WHERE user_id = ?')
-        .get(req.user!.id) as { available_balance: number; pending_withdrawal: number } | undefined;
+      const wallet = ensureAndReconcileWallet(req.user!.id);
       const available = wallet ? wallet.available_balance : 0;
       const spendable = wallet ? Math.max(0, wallet.available_balance - wallet.pending_withdrawal) : 0;
       if (spendable < t.entry_fee) {
@@ -1395,21 +1468,30 @@ app.post('/api/tournaments/:id/join', requireAuth, async (req: AuthenticatedRequ
 
       db.prepare('UPDATE tournaments SET filled_slots = filled_slots + 1 WHERE id = ?').run(tournamentId);
 
+      const txCode = t.entry_fee > 0 ? generateTxCode() : '';
       if (t.entry_fee > 0) {
         db.prepare(
-          `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
-           VALUES (?, ?, 'entry_fee', ?, 'debit', ?, 'completed', ?, ?)`
+          `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description, idempotency_key)
+           VALUES (?, ?, 'entry_fee', ?, 'debit', ?, 'completed', ?, ?, ?)`
         ).run(
-          generateTxCode(),
+          txCode,
           req.user!.id,
           t.entry_fee,
           newBalance,
           `TOUR-${tournamentId}`,
-          `Entry fee for ${t.title}`
+          `Entry fee for ${t.title}`,
+          idempotencyKey
         );
       }
 
-      return { status: 200, slotNumber: slotRow.nextSlot, newBalance };
+      return {
+        status: 200,
+        slotNumber: slotRow.nextSlot,
+        newBalance,
+        entryFee: t.entry_fee,
+        txCode,
+        title: t.title,
+      };
     }).immediate();
 
     if ('error' in result) {
@@ -1418,6 +1500,20 @@ app.post('/api/tournaments/:id/join', requireAuth, async (req: AuthenticatedRequ
     }
 
     recalculateAllUserPoints();
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitTournamentJoinToFirestore({
+        userId: req.user!.id,
+        tournamentId,
+        slotNumber: result.slotNumber,
+        inGameName,
+        inGameId,
+        entryFee: result.entryFee,
+        txCode: result.txCode,
+        tournamentTitle: result.title,
+        actorIdToken: fbToken,
+      }).catch(() => {});
+    }
     const updatedTournament = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as Record<
       string,
       unknown
@@ -1436,11 +1532,7 @@ app.post('/api/tournaments/:id/join', requireAuth, async (req: AuthenticatedRequ
 
 // --- WALLET & PAYMENTS ---
 app.get('/api/wallet', requireAuth, (req: AuthenticatedRequest, res: Response) => {
-  db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
-    req.user!.id,
-    req.user!.wallet_balance
-  );
-  const wallet = db.prepare('SELECT * FROM wallet_accounts WHERE user_id = ?').get(req.user!.id);
+  const wallet = ensureAndReconcileWallet(req.user!.id);
   const deposits = db
     .prepare(
       `SELECT id, amount, method, transaction_ref, sender_account, status, admin_note, created_at, reviewed_at
@@ -1480,7 +1572,7 @@ app.get('/api/wallet', requireAuth, (req: AuthenticatedRequest, res: Response) =
   });
 });
 
-app.post('/api/wallet/deposit', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/wallet/deposit', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const amount = Number(req.body.amount);
     const method = typeof req.body.method === 'string' ? req.body.method.trim() : '';
@@ -1489,6 +1581,9 @@ app.post('/api/wallet/deposit', requireAuth, (req: AuthenticatedRequest, res: Re
     const senderAccount =
       typeof req.body.senderAccount === 'string' ? req.body.senderAccount.trim() : '';
     const screenshot = validateImageInput(req.body.screenshotData, 2 * 1024 * 1024);
+    const rawIdem = req.headers['idempotency-key'] ?? req.body?.idempotencyKey;
+    const idempotencyKey =
+      typeof rawIdem === 'string' ? rawIdem.trim().slice(0, 128) : '';
 
     if (!Number.isInteger(amount) || amount < 100 || amount > 500000) {
       res.status(400).json({ error: 'Deposit amount must be a whole number between PKR 100 and PKR 500,000.' });
@@ -1518,46 +1613,89 @@ app.post('/api/wallet/deposit', requireAuth, (req: AuthenticatedRequest, res: Re
     }
 
     const result = db.transaction(() => {
-      const dup = db.prepare('SELECT id FROM deposits WHERE transaction_ref = ?').get(transactionRef);
+      if (idempotencyKey) {
+        const dupIdem = db
+          .prepare('SELECT id FROM transactions WHERE idempotency_key = ?')
+          .get(idempotencyKey);
+        if (dupIdem) {
+          return { conflict: 'This deposit request was already submitted.' };
+        }
+      }
+
+      const dup = db
+        .prepare('SELECT id FROM deposits WHERE upper(transaction_ref) = ?')
+        .get(transactionRef);
       if (dup) {
         return { conflict: 'Duplicate Transaction ID detected. This TID has already been submitted.' };
       }
 
-      const wallet = db
-        .prepare('SELECT available_balance FROM wallet_accounts WHERE user_id = ?')
-        .get(req.user!.id) as { available_balance: number };
+      const recentSamePending = db
+        .prepare(
+          `SELECT id FROM deposits
+           WHERE user_id = ? AND amount = ? AND method = ? AND sender_account = ? AND status = 'pending'
+             AND datetime(created_at) >= datetime('now', '-60 seconds')`
+        )
+        .get(req.user!.id, amount, method, senderAccount);
+      if (recentSamePending) {
+        return {
+          conflict: 'An identical pending deposit request was just submitted. Please wait for verification.',
+        };
+      }
 
+      const wallet = ensureAndReconcileWallet(req.user!.id);
+      if (!wallet) {
+        return { status: 404, error: 'Account wallet not found.' };
+      }
+
+      const firestoreKey = generateFirestoreRecordKey('DEP');
       const depInfo = db
         .prepare(
-          `INSERT INTO deposits (user_id, amount, method, transaction_ref, sender_account, screenshot_data, status)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending')`
+          `INSERT INTO deposits (user_id, firestore_key, amount, method, transaction_ref, sender_account, screenshot_data, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`
         )
-        .run(req.user!.id, amount, method, transactionRef, senderAccount, screenshot);
+        .run(req.user!.id, firestoreKey, amount, method, transactionRef, senderAccount, screenshot);
 
       const depId = Number(depInfo.lastInsertRowid);
+      const txCode = generateTxCode();
       db.prepare(
-        `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
-         VALUES (?, ?, 'deposit', ?, 'credit', ?, 'pending', ?, ?)`
+        `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description, idempotency_key)
+         VALUES (?, ?, 'deposit', ?, 'credit', ?, 'pending', ?, ?, ?)`
       ).run(
-        generateTxCode(),
+        txCode,
         req.user!.id,
         amount,
         wallet.available_balance,
         `DEP-${depId}`,
-        `Deposit request via ${method.replace('_', ' ')} (TID: ${transactionRef})`
+        `Deposit request via ${method.replace('_', ' ')} (TID: ${transactionRef})`,
+        idempotencyKey
       );
 
-      return { depId };
+      return { depId, txCode };
     }).immediate();
 
-    if ('conflict' in result) {
+    if ('error' in result && result.error) {
+      res.status(result.status ?? 400).json({ error: result.error });
+      return;
+    }
+    if ('conflict' in result && result.conflict) {
       res.status(409).json({ error: result.conflict });
       return;
+    }
+
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitDepositCreateToFirestore({
+        depositId: result.depId!,
+        userId: req.user!.id,
+        txCode: result.txCode!,
+        actorIdToken: fbToken,
+      }).catch(() => {});
     }
 
     res.status(201).json({
       ok: true,
       depositId: result.depId,
+      user: getUserById(req.user!.id),
       message: 'Deposit submitted for manual verification.',
     });
   } catch (err) {
@@ -1566,13 +1704,16 @@ app.post('/api/wallet/deposit', requireAuth, (req: AuthenticatedRequest, res: Re
   }
 });
 
-app.post('/api/wallet/withdraw', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/wallet/withdraw', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const amount = Number(req.body.amount);
     const method = typeof req.body.method === 'string' ? req.body.method.trim() : '';
     const bankName = typeof req.body.bankName === 'string' ? req.body.bankName.trim() : '';
     const accountTitle = typeof req.body.accountTitle === 'string' ? req.body.accountTitle.trim() : '';
     const accountNumber = typeof req.body.accountNumber === 'string' ? req.body.accountNumber.trim() : '';
+    const rawIdem = req.headers['idempotency-key'] ?? req.body?.idempotencyKey;
+    const idempotencyKey =
+      typeof rawIdem === 'string' ? rawIdem.trim().slice(0, 128) : '';
 
     if (!Number.isInteger(amount) || amount < 200 || amount > 500000) {
       res.status(400).json({ error: 'Withdrawal amount must be a whole number between PKR 200 and PKR 500,000.' });
@@ -1601,13 +1742,32 @@ app.post('/api/wallet/withdraw', requireAuth, (req: AuthenticatedRequest, res: R
     }
 
     const result = db.transaction(() => {
-      db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
-        req.user!.id,
-        req.user!.wallet_balance
-      );
-      const wallet = db
-        .prepare('SELECT available_balance, pending_withdrawal FROM wallet_accounts WHERE user_id = ?')
-        .get(req.user!.id) as { available_balance: number; pending_withdrawal: number };
+      if (idempotencyKey) {
+        const dupIdem = db
+          .prepare('SELECT id FROM transactions WHERE idempotency_key = ?')
+          .get(idempotencyKey);
+        if (dupIdem) {
+          return { error: 'This withdrawal request was already submitted.' };
+        }
+      }
+
+      const recentSamePending = db
+        .prepare(
+          `SELECT id FROM withdrawals
+           WHERE user_id = ? AND amount = ? AND method = ? AND account_number = ? AND status = 'pending'
+             AND datetime(created_at) >= datetime('now', '-15 seconds')`
+        )
+        .get(req.user!.id, amount, method, accountNumber);
+      if (recentSamePending) {
+        return {
+          error: 'An identical pending withdrawal request was just submitted. Please wait a moment.',
+        };
+      }
+
+      const wallet = ensureAndReconcileWallet(req.user!.id);
+      if (!wallet) {
+        return { error: 'Account wallet not found.' };
+      }
 
       const spendable = Math.max(0, wallet.available_balance - wallet.pending_withdrawal);
       if (amount > spendable) {
@@ -1622,35 +1782,48 @@ app.post('/api/wallet/withdraw', requireAuth, (req: AuthenticatedRequest, res: R
         "UPDATE wallet_accounts SET pending_withdrawal = ?, updated_at = datetime('now') WHERE user_id = ?"
       ).run(newPending, req.user!.id);
 
+      const firestoreKey = generateFirestoreRecordKey('WD');
       const wInfo = db
         .prepare(
-          `INSERT INTO withdrawals (user_id, amount, method, bank_name, account_title, account_number, status)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending')`
+          `INSERT INTO withdrawals (user_id, firestore_key, amount, method, bank_name, account_title, account_number, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`
         )
-        .run(req.user!.id, amount, method, method === 'bank_account' ? bankName : '', accountTitle, accountNumber);
+        .run(req.user!.id, firestoreKey, amount, method, method === 'bank_account' ? bankName : '', accountTitle, accountNumber);
 
       const wId = Number(wInfo.lastInsertRowid);
       const methodLabel =
         method === 'bank_account' ? `${bankName} Bank` : method === 'easypaisa' ? 'Easypaisa' : 'JazzCash';
 
+      const txCode = generateTxCode();
       db.prepare(
-        `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
-         VALUES (?, ?, 'withdrawal', ?, 'debit', ?, 'pending', ?, ?)`
+        `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description, idempotency_key)
+         VALUES (?, ?, 'withdrawal', ?, 'debit', ?, 'pending', ?, ?, ?)`
       ).run(
-        generateTxCode(),
+        txCode,
         req.user!.id,
         amount,
         wallet.available_balance,
         `WD-${wId}`,
-        `Withdrawal request via ${methodLabel} (${accountNumber}) — Pending verification`
+        `Withdrawal request via ${methodLabel} (${accountNumber}) — Pending verification`,
+        idempotencyKey
       );
 
-      return { withdrawalId: wId };
+      return { withdrawalId: wId, txCode };
     }).immediate();
 
-    if ('error' in result) {
+    if ('error' in result && result.error) {
       res.status(400).json({ error: result.error });
       return;
+    }
+
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitWithdrawalCreateToFirestore({
+        withdrawalId: result.withdrawalId!,
+        userId: req.user!.id,
+        txCode: result.txCode!,
+        actorIdToken: fbToken,
+      }).catch(() => {});
     }
 
     res.status(201).json({
@@ -1666,12 +1839,15 @@ app.post('/api/wallet/withdraw', requireAuth, (req: AuthenticatedRequest, res: R
 });
 
 // --- SEND TO FRIEND (P2P WALLET TRANSFER) ---
-app.post('/api/wallet/transfer', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/wallet/transfer', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const recipientIdentifier =
       typeof req.body.recipientIdentifier === 'string' ? req.body.recipientIdentifier.trim() : '';
     const amount = Math.floor(Number(req.body.amount));
     const note = typeof req.body.note === 'string' ? req.body.note.trim().slice(0, 100) : '';
+    const rawIdem = req.headers['idempotency-key'] ?? req.body?.idempotencyKey;
+    const idempotencyKey =
+      typeof rawIdem === 'string' ? rawIdem.trim().slice(0, 128) : '';
 
     if (!recipientIdentifier || recipientIdentifier.length < 2) {
       res.status(400).json({ error: 'Enter your friend’s Player ID, username, or email.' });
@@ -1683,6 +1859,15 @@ app.post('/api/wallet/transfer', requireAuth, (req: AuthenticatedRequest, res: R
     }
 
     const result = db.transaction(() => {
+      if (idempotencyKey) {
+        const dupIdem = db
+          .prepare('SELECT id FROM transactions WHERE idempotency_key = ?')
+          .get(idempotencyKey);
+        if (dupIdem) {
+          return { status: 409, error: 'Duplicate transfer request detected.' };
+        }
+      }
+
       const recipient = db
         .prepare(
           `SELECT id, username, player_id, is_blocked, wallet_balance
@@ -1703,30 +1888,30 @@ app.post('/api/wallet/transfer', requireAuth, (req: AuthenticatedRequest, res: R
         return { status: 400, error: 'Recipient account is currently unavailable.' };
       }
 
-      db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
-        req.user!.id,
-        req.user!.wallet_balance
-      );
-      db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
-        recipient.id,
-        recipient.wallet_balance
-      );
+      const recentDupTransfer = db
+        .prepare(
+          `SELECT id FROM transactions
+           WHERE user_id = ? AND type = 'transfer_out' AND amount = ? AND reference_id = ?
+             AND datetime(created_at) >= datetime('now', '-10 seconds')`
+        )
+        .get(req.user!.id, amount, `XFER-${recipient.player_id}`);
+      if (recentDupTransfer) {
+        return { status: 409, error: 'An identical transfer was just sent. Please wait a few seconds.' };
+      }
 
-      const senderWallet = db
-        .prepare('SELECT available_balance, pending_withdrawal FROM wallet_accounts WHERE user_id = ?')
-        .get(req.user!.id) as { available_balance: number; pending_withdrawal: number };
+      const senderWallet = ensureAndReconcileWallet(req.user!.id);
+      const recipientWallet = ensureAndReconcileWallet(recipient.id);
+      if (!senderWallet || !recipientWallet) {
+        return { status: 404, error: 'Wallet account not found.' };
+      }
+
       const spendable = Math.max(0, senderWallet.available_balance - senderWallet.pending_withdrawal);
-
       if (amount > spendable) {
         return {
           status: 400,
           error: `Insufficient spendable balance. Available: PKR ${spendable}.`,
         };
       }
-
-      const recipientWallet = db
-        .prepare('SELECT available_balance FROM wallet_accounts WHERE user_id = ?')
-        .get(recipient.id) as { available_balance: number };
 
       const nextSenderBal = senderWallet.available_balance - amount;
       const nextRecipientBal = recipientWallet.available_balance + amount;
@@ -1744,36 +1929,65 @@ app.post('/api/wallet/transfer', requireAuth, (req: AuthenticatedRequest, res: R
       );
 
       const noteSuffix = note ? ` (${note})` : '';
+      const txOutCode = generateTxCode();
+      const txInCode = generateTxCode();
+      const outDescription = `Sent to ${recipient.username} (${recipient.player_id})${noteSuffix}`;
+      const inDescription = `Received from ${req.user!.username} (${req.user!.player_id})${noteSuffix}`;
+
       db.prepare(
-        `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
-         VALUES (?, ?, 'transfer_out', ?, 'debit', ?, 'completed', ?, ?)`
+        `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description, idempotency_key)
+         VALUES (?, ?, 'transfer_out', ?, 'debit', ?, 'completed', ?, ?, ?)`
       ).run(
-        generateTxCode(),
+        txOutCode,
         req.user!.id,
         amount,
         nextSenderBal,
         `XFER-${recipient.player_id}`,
-        `Sent to ${recipient.username} (${recipient.player_id})${noteSuffix}`
+        outDescription,
+        idempotencyKey
       );
 
       db.prepare(
         `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
          VALUES (?, ?, 'transfer_in', ?, 'credit', ?, 'completed', ?, ?)`
       ).run(
-        generateTxCode(),
+        txInCode,
         recipient.id,
         amount,
         nextRecipientBal,
         `XFER-${req.user!.player_id}`,
-        `Received from ${req.user!.username} (${req.user!.player_id})${noteSuffix}`
+        inDescription
       );
 
-      return { status: 200, recipientUsername: recipient.username, recipientPlayerId: recipient.player_id };
+      return {
+        status: 200,
+        recipientId: recipient.id,
+        recipientUsername: recipient.username,
+        recipientPlayerId: recipient.player_id,
+        txOutCode,
+        txInCode,
+        outDescription,
+        inDescription,
+      };
     }).immediate();
 
     if ('error' in result) {
       res.status(result.status).json({ error: result.error });
       return;
+    }
+
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitTransferToFirestore({
+        senderId: req.user!.id,
+        recipientId: result.recipientId,
+        amount,
+        txOutCode: result.txOutCode,
+        txInCode: result.txInCode,
+        outDescription: result.outDescription,
+        inDescription: result.inDescription,
+        senderIdToken: fbToken,
+      }).catch(() => {});
     }
 
     res.json({
@@ -1812,7 +2026,7 @@ app.get('/api/lucky-draw', requireAuth, (req: AuthenticatedRequest, res: Respons
   });
 });
 
-app.post('/api/lucky-draw/spin', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/lucky-draw/spin', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const todayPkt = getTodayPktDateKey();
     const rewardTable = [
@@ -1849,26 +2063,23 @@ app.post('/api/lucky-draw/spin', requireAuth, (req: AuthenticatedRequest, res: R
         )
         .run(req.user!.id, todayPkt, chosen.amount, chosen.label);
 
+      let txCode: string | null = null;
       if (chosen.amount > 0) {
-        db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
-          req.user!.id,
-          req.user!.wallet_balance
-        );
-        const wallet = db
-          .prepare('SELECT available_balance FROM wallet_accounts WHERE user_id = ?')
-          .get(req.user!.id) as { available_balance: number };
-        const nextBal = wallet.available_balance + chosen.amount;
+        const wallet = ensureAndReconcileWallet(req.user!.id);
+        const curBal = wallet ? wallet.available_balance : req.user!.wallet_balance;
+        const nextBal = curBal + chosen.amount;
 
         db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(nextBal, req.user!.id);
         db.prepare("UPDATE wallet_accounts SET available_balance = ?, updated_at = datetime('now') WHERE user_id = ?").run(
           nextBal,
           req.user!.id
         );
+        txCode = generateTxCode();
         db.prepare(
           `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
            VALUES (?, ?, 'lucky_draw', ?, 'credit', ?, 'completed', ?, ?)`
         ).run(
-          generateTxCode(),
+          txCode,
           req.user!.id,
           chosen.amount,
           nextBal,
@@ -1880,12 +2091,24 @@ app.post('/api/lucky-draw/spin', requireAuth, (req: AuthenticatedRequest, res: R
       const entry = db
         .prepare('SELECT id, draw_date_pkt, prize_amount, prize_label, created_at FROM lucky_draw_entries WHERE id = ?')
         .get(Number(info.lastInsertRowid));
-      return { entry };
+      return { entry, txCode };
     }).immediate();
 
     if ('conflict' in result) {
       res.status(409).json({ error: result.conflict });
       return;
+    }
+
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitLuckyDrawToFirestore({
+        userId: req.user!.id,
+        drawDatePkt: todayPkt,
+        prizeAmount: chosen.amount,
+        prizeLabel: chosen.label,
+        txCode: result.txCode ?? null,
+        actorIdToken: fbToken,
+      }).catch(() => {});
     }
 
     res.json({
@@ -1900,8 +2123,13 @@ app.post('/api/lucky-draw/spin', requireAuth, (req: AuthenticatedRequest, res: R
 });
 
 // --- ADMIN PANEL ENDPOINTS ---
-app.get('/api/admin/overview', requireAuth, requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
-  await syncMissingTournamentsFromFirestore();
+app.get('/api/admin/overview', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const fbToken = extractFirebaseIdToken(req);
+  if (fbToken) {
+    await hydrateAllAdminStateFromFirestore(fbToken);
+  } else {
+    await syncMissingTournamentsFromFirestore();
+  }
   const userStats = db
     .prepare(
       `SELECT
@@ -1985,10 +2213,14 @@ app.get('/api/admin/overview', requireAuth, requireAdmin, async (_req: Authentic
   });
 });
 
-app.get('/api/admin/users', requireAuth, requireAdmin, (_req: AuthenticatedRequest, res: Response) => {
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const fbToken = extractFirebaseIdToken(req);
+  if (fbToken) {
+    await hydrateAllAdminStateFromFirestore(fbToken);
+  }
   const users = db
     .prepare(
-      `SELECT u.id, u.player_id, u.username, u.email, u.phone, u.avatar_url, u.role, u.is_blocked,
+      `SELECT u.id, u.firebase_uid, u.player_id, u.username, u.email, u.phone, u.avatar_url, u.role, u.is_blocked,
               u.wallet_balance, u.matches_played, u.wins, u.kills, u.points, u.created_at,
               w.pending_withdrawal, w.total_deposited, w.total_withdrawn, w.total_won
        FROM users u
@@ -1999,7 +2231,7 @@ app.get('/api/admin/users', requireAuth, requireAdmin, (_req: AuthenticatedReque
   res.json({ users });
 });
 
-app.post('/api/admin/users', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/admin/users', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
     const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
@@ -2031,7 +2263,7 @@ app.post('/api/admin/users', requireAuth, requireAdmin, (req: AuthenticatedReque
     const playerId = generateUniquePlayerId();
     const passwordHash = hashPassword(password);
 
-    const newUserId = db.transaction(() => {
+    const outcome = db.transaction(() => {
       const info = db
         .prepare(
           `INSERT INTO users (player_id, username, email, password_hash, avatar_url, role, wallet_balance)
@@ -2054,30 +2286,50 @@ app.post('/api/admin/users', requireAuth, requireAdmin, (req: AuthenticatedReque
       if (role === 'admin') {
         db.prepare("INSERT INTO admins (user_id, admin_level) VALUES (?, 'moderator')").run(uid);
       }
+      let txRow: {
+        tx_code: string;
+        type: string;
+        amount: number;
+        direction: string;
+        balance_after: number;
+        status: string;
+        reference_id: string;
+        description: string;
+      } | null = null;
       if (initialBalance > 0) {
+        const txCode = generateTxCode();
+        const refId = `ADM-${req.user!.id}`;
+        const desc = `Initial wallet credit by admin ${req.user!.username}`;
         db.prepare(
           `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
            VALUES (?, ?, 'admin_adjustment', ?, 'credit', ?, 'completed', ?, ?)`
-        ).run(
-          generateTxCode(),
-          uid,
-          initialBalance,
-          initialBalance,
-          `ADM-${req.user!.id}`,
-          `Initial wallet credit by admin ${req.user!.username}`
-        );
+        ).run(txCode, uid, initialBalance, initialBalance, refId, desc);
+        txRow = {
+          tx_code: txCode,
+          type: 'admin_adjustment',
+          amount: initialBalance,
+          direction: 'credit',
+          balance_after: initialBalance,
+          status: 'completed',
+          reference_id: refId,
+          description: desc,
+        };
       }
-      return uid;
+      return { uid, txRow };
     }).immediate();
 
-    res.status(201).json({ user: getUserById(newUserId) });
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitAdminUserSyncToFirestore(outcome.uid, outcome.txRow, fbToken).catch(() => {});
+    }
+    res.status(201).json({ user: getUserById(outcome.uid) });
   } catch (err) {
     console.error('Admin create user error:', err);
     res.status(500).json({ error: 'Failed to create user.' });
   }
 });
 
-app.patch('/api/admin/users/:id', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const targetId = Number(req.params.id);
     if (!Number.isInteger(targetId) || targetId <= 0) {
@@ -2127,12 +2379,24 @@ app.patch('/api/admin/users/:id', requireAuth, requireAdmin, (req: Authenticated
         }
       }
 
+      let txRow: {
+        tx_code: string;
+        type: string;
+        amount: number;
+        direction: string;
+        balance_after: number;
+        status: string;
+        reference_id: string;
+        description: string;
+      } | null = null;
+
       if (req.body.balanceAdjustment !== undefined) {
         const delta = Math.trunc(Number(req.body.balanceAdjustment));
         if (delta !== 0) {
-          const wallet = db
-            .prepare('SELECT available_balance FROM wallet_accounts WHERE user_id = ?')
-            .get(targetId) as { available_balance: number };
+          const wallet = ensureAndReconcileWallet(targetId);
+          if (!wallet) {
+            return { status: 404, error: 'Player wallet not found.' };
+          }
           const nextBal = wallet.available_balance + delta;
           if (nextBal < 0) {
             return { status: 400, error: 'Adjustment would result in negative wallet balance.' };
@@ -2147,22 +2411,28 @@ app.patch('/api/admin/users/:id', requireAuth, requireAdmin, (req: Authenticated
               ? req.body.adjustmentNote.trim()
               : `Admin balance adjustment by ${req.user!.username}`;
 
+          const txCode = generateTxCode();
+          const refId = `ADM-${req.user!.id}`;
+          const direction = delta > 0 ? 'credit' : 'debit';
           db.prepare(
             `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
              VALUES (?, ?, 'admin_adjustment', ?, ?, ?, 'completed', ?, ?)`
-          ).run(
-            generateTxCode(),
-            targetId,
-            Math.abs(delta),
-            delta > 0 ? 'credit' : 'debit',
-            nextBal,
-            `ADM-${req.user!.id}`,
-            note
-          );
+          ).run(txCode, targetId, Math.abs(delta), direction, nextBal, refId, note);
+
+          txRow = {
+            tx_code: txCode,
+            type: 'admin_adjustment',
+            amount: Math.abs(delta),
+            direction,
+            balance_after: nextBal,
+            status: 'completed',
+            reference_id: refId,
+            description: note,
+          };
         }
       }
 
-      return { status: 200 };
+      return { status: 200, txRow };
     }).immediate();
 
     if ('error' in result) {
@@ -2170,6 +2440,10 @@ app.patch('/api/admin/users/:id', requireAuth, requireAdmin, (req: Authenticated
       return;
     }
 
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitAdminUserSyncToFirestore(targetId, result.txRow ?? null, fbToken).catch(() => {});
+    }
     res.json({ user: getUserById(targetId) });
   } catch (err) {
     console.error('Admin update user error:', err);
@@ -2229,6 +2503,7 @@ app.post('/api/admin/users/restore-from-cloud', requireAuth, requireAdmin, (req:
     const outcome = db.transaction(() => {
       let restoredCount = 0;
       let skippedCount = 0;
+      const seenEmails = new Set<string>();
 
       for (const raw of cloudUsers.slice(0, 500)) {
         if (!raw || typeof raw !== 'object') {
@@ -2244,6 +2519,12 @@ app.post('/api/admin/users/restore-from-cloud', requireAuth, requireAdmin, (req:
           skippedCount += 1;
           continue;
         }
+        if (seenEmails.has(email)) {
+          skippedCount += 1;
+          continue;
+        }
+        seenEmails.add(email);
+
         if (deletedEmails.has(email) || (Number.isInteger(sqliteId) && deletedIds.has(sqliteId))) {
           skippedCount += 1;
           continue;
@@ -2255,6 +2536,15 @@ app.post('/api/admin/users/restore-from-cloud', requireAuth, requireAdmin, (req:
         if (existingByEmail) {
           skippedCount += 1;
           continue;
+        }
+        if (Number.isInteger(sqliteId) && sqliteId > 0) {
+          const existingById = db
+            .prepare('SELECT id FROM users WHERE id = ?')
+            .get(sqliteId) as { id: number } | undefined;
+          if (existingById) {
+            skippedCount += 1;
+            continue;
+          }
         }
 
         let username = rawUsername
@@ -2281,6 +2571,8 @@ app.post('/api/admin/users/restore-from-cloud', requireAuth, requireAdmin, (req:
           playerId = generateUniquePlayerId();
         }
 
+        const rawFbUid = typeof rec.firebase_uid === 'string' ? rec.firebase_uid.trim() : '';
+        const firebaseUid = /^[a-zA-Z0-9_-]{1,128}$/.test(rawFbUid) ? rawFbUid : null;
         const phone = typeof rec.phone === 'string' ? rec.phone.trim().slice(0, 24) : '';
         const avatarChecked = validateImageInput(rec.avatar_url, 1024 * 1024);
         const avatarUrl = avatarChecked || '/src/assets/images/avatar_esports_pro_1795298801657.jpg';
@@ -2288,19 +2580,35 @@ app.post('/api/admin/users/restore-from-cloud', requireAuth, requireAdmin, (req:
         const role: 'player' | 'admin' = isBootstrapped ? 'admin' : 'player';
         const isBlocked = rec.is_blocked === 1 && !isBootstrapped ? 1 : 0;
         const walletBalance = Math.max(0, Math.floor(Number(rec.wallet_balance) || 0));
+        const pendingWd = Math.max(0, Math.floor(Number(rec.pending_withdrawal) || 0));
+        const totalDep = Math.max(0, Math.floor(Number(rec.total_deposited) || 0));
+        const totalWd = Math.max(0, Math.floor(Number(rec.total_withdrawn) || 0));
+        const totalWon = Math.max(0, Math.floor(Number(rec.total_won) || 0));
         const matchesPlayed = Math.max(0, Math.floor(Number(rec.matches_played) || 0));
         const wins = Math.max(0, Math.floor(Number(rec.wins) || 0));
+        const kills = Math.max(0, Math.floor(Number(rec.kills) || 0));
         const points = Math.max(0, Math.floor(Number(rec.points) || 0));
         const tempPasswordHash = hashPassword(crypto.randomBytes(24).toString('hex'));
+
+        const existingByUid = firebaseUid
+          ? (db.prepare('SELECT id FROM users WHERE firebase_uid = ?').get(firebaseUid) as
+              | { id: number }
+              | undefined)
+          : undefined;
+        if (existingByUid) {
+          skippedCount += 1;
+          continue;
+        }
 
         const info = db
           .prepare(
             `INSERT INTO users (
-               player_id, username, email, phone, password_hash, avatar_url, role, is_blocked,
-               wallet_balance, matches_played, wins, points
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+               firebase_uid, player_id, username, email, phone, password_hash, avatar_url, role, is_blocked,
+               wallet_balance, matches_played, wins, kills, points
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .run(
+            firebaseUid,
             playerId,
             username,
             email,
@@ -2312,13 +2620,15 @@ app.post('/api/admin/users/restore-from-cloud', requireAuth, requireAdmin, (req:
             walletBalance,
             matchesPlayed,
             wins,
+            kills,
             points
           );
         const newId = Number(info.lastInsertRowid);
-        db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
-          newId,
-          walletBalance
-        );
+        db.prepare(
+          `INSERT OR IGNORE INTO wallet_accounts (
+             user_id, available_balance, pending_withdrawal, total_deposited, total_withdrawn, total_won
+           ) VALUES (?, ?, ?, ?, ?, ?)`
+        ).run(newId, walletBalance, pendingWd, totalDep, totalWd, totalWon);
         if (role === 'admin') {
           db.prepare("INSERT OR IGNORE INTO admins (user_id, admin_level) VALUES (?, 'super_admin')").run(
             newId
@@ -2422,7 +2732,7 @@ app.delete('/api/admin/users/:id', requireAuth, requireAdmin, (req: Authenticate
   res.json({ ok: true, deletedUserId: targetId, deletedUserIds: result.deletedUserIds });
 });
 
-app.post('/api/admin/users/:id/award-prize', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/admin/users/:id/award-prize', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const targetId = Number(req.params.id);
     const amount = Math.floor(Number(req.body.amount));
@@ -2444,14 +2754,7 @@ app.post('/api/admin/users/:id/award-prize', requireAuth, requireAdmin, (req: Au
         .get(targetId) as { id: number; username: string; wallet_balance: number } | undefined;
       if (!targetUser) return { status: 404, error: 'Player account not found.' };
 
-      db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
-        targetId,
-        targetUser.wallet_balance
-      );
-      const wallet = db
-        .prepare('SELECT available_balance, total_won FROM wallet_accounts WHERE user_id = ?')
-        .get(targetId) as { available_balance: number; total_won: number };
-
+      const wallet = ensureAndReconcileWallet(targetId)!;
       const nextBal = wallet.available_balance + amount;
       const nextWon = wallet.total_won + amount;
 
@@ -2474,19 +2777,26 @@ app.post('/api/admin/users/:id/award-prize', requireAuth, requireAdmin, (req: Au
           ? `Tournament Winner Prize — ${tourTitle}`
           : `Tournament Winner Prize credited by admin ${req.user!.username}`);
 
+      const txCode = generateTxCode();
+      const refId = tournamentId ? `TOUR-${tournamentId}` : `PRIZE-${req.user!.id}`;
       db.prepare(
         `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
          VALUES (?, ?, 'prize_win', ?, 'credit', ?, 'completed', ?, ?)`
-      ).run(
-        generateTxCode(),
-        targetId,
-        amount,
-        nextBal,
-        tournamentId ? `TOUR-${tournamentId}` : `PRIZE-${req.user!.id}`,
-        description
-      );
+      ).run(txCode, targetId, amount, nextBal, refId, description);
 
-      return { status: 200 };
+      return {
+        status: 200,
+        txRow: {
+          tx_code: txCode,
+          type: 'prize_win',
+          amount,
+          direction: 'credit',
+          balance_after: nextBal,
+          status: 'completed',
+          reference_id: refId,
+          description,
+        },
+      };
     }).immediate();
 
     if ('error' in result) {
@@ -2494,6 +2804,10 @@ app.post('/api/admin/users/:id/award-prize', requireAuth, requireAdmin, (req: Au
       return;
     }
     recalculateAllUserPoints();
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitAdminUserSyncToFirestore(targetId, result.txRow ?? null, fbToken).catch(() => {});
+    }
     res.json({ ok: true, user: getUserById(targetId) });
   } catch (err) {
     console.error('Award prize error:', err);
@@ -2858,16 +3172,24 @@ app.delete('/api/admin/tournaments/:id', requireAuth, requireAdmin, async (req: 
         | undefined;
       if (!t) return { notFound: true };
 
+      const refunded: Array<{
+        userId: number;
+        tx_code: string;
+        amount: number;
+        balance_after: number;
+        description: string;
+      }> = [];
+
       if ((t.status === 'upcoming' || t.status === 'live') && t.entry_fee > 0) {
         const regs = db
           .prepare('SELECT user_id FROM tournament_registrations WHERE tournament_id = ?')
           .all(id) as Array<{ user_id: number }>;
         for (const r of regs) {
-          const wallet = db
-            .prepare('SELECT available_balance FROM wallet_accounts WHERE user_id = ?')
-            .get(r.user_id) as { available_balance: number } | undefined;
+          const wallet = ensureAndReconcileWallet(r.user_id);
           if (wallet) {
             const nextBal = wallet.available_balance + t.entry_fee;
+            const txCode = generateTxCode();
+            const desc = `Entry fee refunded: ${t.title} removed`;
             db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(nextBal, r.user_id);
             db.prepare(
               "UPDATE wallet_accounts SET available_balance = ?, updated_at = datetime('now') WHERE user_id = ?"
@@ -2875,26 +3197,34 @@ app.delete('/api/admin/tournaments/:id', requireAuth, requireAdmin, async (req: 
             db.prepare(
               `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
                VALUES (?, ?, 'refund', ?, 'credit', ?, 'completed', ?, ?)`
-            ).run(
-              generateTxCode(),
-              r.user_id,
-              t.entry_fee,
-              nextBal,
-              `TOUR-${id}`,
-              `Entry fee refunded: ${t.title} removed`
-            );
+            ).run(txCode, r.user_id, t.entry_fee, nextBal, `TOUR-${id}`, desc);
+            refunded.push({
+              userId: r.user_id,
+              tx_code: txCode,
+              amount: t.entry_fee,
+              balance_after: nextBal,
+              description: desc,
+            });
           }
         }
       }
 
       db.prepare('DELETE FROM tournaments WHERE id = ?').run(id);
       db.prepare('INSERT OR IGNORE INTO deleted_tournaments (tournament_id) VALUES (?)').run(id);
-      return { ok: true, deletedId: id };
+      return { ok: true, deletedId: id, refunded };
     }).immediate();
 
     if ('notFound' in result) {
       res.status(404).json({ error: 'Tournament not found.' });
       return;
+    }
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken && result.refunded.length > 0) {
+      await commitAdminTournamentDeleteRefundsToFirestore({
+        tournamentId: id,
+        refunded: result.refunded,
+        adminIdToken: fbToken,
+      }).catch(() => {});
     }
     const deletedRows = db
       .prepare('SELECT tournament_id FROM deleted_tournaments ORDER BY tournament_id DESC LIMIT 200')
@@ -2951,11 +3281,24 @@ app.post('/api/admin/tournaments/:id/players', requireAuth, requireAdmin, async 
         .get(tournamentId, targetUser.id);
       if (already) return { status: 409, error: 'Player is already registered in this tournament.' };
 
+      let txRow: {
+        tx_code: string;
+        type: string;
+        amount: number;
+        direction: string;
+        balance_after: number;
+        status: string;
+        reference_id: string;
+        description: string;
+      } | null = null;
+
       if (chargeFee && t.entry_fee > 0) {
-        if (targetUser.wallet_balance < t.entry_fee) {
-          return { status: 400, error: `Player balance (PKR ${targetUser.wallet_balance}) is below entry fee.` };
+        const wallet = ensureAndReconcileWallet(targetUser.id);
+        const curBal = wallet ? wallet.available_balance : targetUser.wallet_balance;
+        if (curBal < t.entry_fee) {
+          return { status: 400, error: `Player balance (PKR ${curBal}) is below entry fee.` };
         }
-        const nextBal = targetUser.wallet_balance - t.entry_fee;
+        const nextBal = curBal - t.entry_fee;
         db.prepare('UPDATE users SET wallet_balance = ?, matches_played = matches_played + 1 WHERE id = ?').run(
           nextBal,
           targetUser.id
@@ -2963,17 +3306,23 @@ app.post('/api/admin/tournaments/:id/players', requireAuth, requireAdmin, async 
         db.prepare(
           "UPDATE wallet_accounts SET available_balance = ?, updated_at = datetime('now') WHERE user_id = ?"
         ).run(nextBal, targetUser.id);
+        const txCode = generateTxCode();
+        const refId = `TOUR-${tournamentId}`;
+        const desc = `Added to ${t.title} by admin`;
         db.prepare(
           `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
            VALUES (?, ?, 'entry_fee', ?, 'debit', ?, 'completed', ?, ?)`
-        ).run(
-          generateTxCode(),
-          targetUser.id,
-          t.entry_fee,
-          nextBal,
-          `TOUR-${tournamentId}`,
-          `Added to ${t.title} by admin`
-        );
+        ).run(txCode, targetUser.id, t.entry_fee, nextBal, refId, desc);
+        txRow = {
+          tx_code: txCode,
+          type: 'entry_fee',
+          amount: t.entry_fee,
+          direction: 'debit',
+          balance_after: nextBal,
+          status: 'completed',
+          reference_id: refId,
+          description: desc,
+        };
       } else {
         db.prepare('UPDATE users SET matches_played = matches_played + 1 WHERE id = ?').run(targetUser.id);
       }
@@ -2982,19 +3331,22 @@ app.post('/api/admin/tournaments/:id/players', requireAuth, requireAdmin, async 
         .prepare('SELECT COALESCE(MAX(slot_number), 0) + 1 as nextSlot FROM tournament_registrations WHERE tournament_id = ?')
         .get(tournamentId) as { nextSlot: number };
 
+      const finalIgn = inGameName || targetUser.username;
+      const finalIgId = inGameId || targetUser.player_id;
       db.prepare(
         `INSERT INTO tournament_registrations (tournament_id, user_id, in_game_name, in_game_id, slot_number)
          VALUES (?, ?, ?, ?, ?)`
-      ).run(
-        tournamentId,
-        targetUser.id,
-        inGameName || targetUser.username,
-        inGameId || targetUser.player_id,
-        slotRow.nextSlot
-      );
+      ).run(tournamentId, targetUser.id, finalIgn, finalIgId, slotRow.nextSlot);
 
       db.prepare('UPDATE tournaments SET filled_slots = filled_slots + 1 WHERE id = ?').run(tournamentId);
-      return { status: 200 };
+      return {
+        status: 200,
+        targetUserId: targetUser.id,
+        inGameName: finalIgn,
+        inGameId: finalIgId,
+        slotNumber: slotRow.nextSlot,
+        txRow,
+      };
     }).immediate();
 
     if ('error' in result) {
@@ -3003,6 +3355,19 @@ app.post('/api/admin/tournaments/:id/players', requireAuth, requireAdmin, async 
     }
 
     recalculateAllUserPoints();
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitAdminPlayerChangeToFirestore({
+        action: 'add',
+        tournamentId,
+        targetUserId: result.targetUserId,
+        inGameName: result.inGameName,
+        inGameId: result.inGameId,
+        slotNumber: result.slotNumber,
+        txRow: result.txRow ?? null,
+        adminIdToken: fbToken,
+      }).catch(() => {});
+    }
     const updated = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as Record<string, unknown>;
     res.json({ tournament: enrichTournament(updated, req.user!) });
   } catch (err) {
@@ -3040,29 +3405,46 @@ app.delete(
         );
         db.prepare('UPDATE tournaments SET filled_slots = MAX(0, filled_slots - 1) WHERE id = ?').run(tournamentId);
 
+        let txRow: {
+          tx_code: string;
+          type: string;
+          amount: number;
+          direction: string;
+          balance_after: number;
+          status: string;
+          reference_id: string;
+          description: string;
+        } | null = null;
+
         if (refund && t.entry_fee > 0) {
-          const wallet = db
-            .prepare('SELECT available_balance FROM wallet_accounts WHERE user_id = ?')
-            .get(userId) as { available_balance: number };
-          const nextBal = wallet.available_balance + t.entry_fee;
-          db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(nextBal, userId);
-          db.prepare(
-            "UPDATE wallet_accounts SET available_balance = ?, updated_at = datetime('now') WHERE user_id = ?"
-          ).run(nextBal, userId);
-          db.prepare(
-            `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
-             VALUES (?, ?, 'refund', ?, 'credit', ?, 'completed', ?, ?)`
-          ).run(
-            generateTxCode(),
-            userId,
-            t.entry_fee,
-            nextBal,
-            `TOUR-${tournamentId}`,
-            `Removed from ${t.title} (refunded)`
-          );
+          const wallet = ensureAndReconcileWallet(userId);
+          if (wallet) {
+            const nextBal = wallet.available_balance + t.entry_fee;
+            db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(nextBal, userId);
+            db.prepare(
+              "UPDATE wallet_accounts SET available_balance = ?, updated_at = datetime('now') WHERE user_id = ?"
+            ).run(nextBal, userId);
+            const txCode = generateTxCode();
+            const refId = `TOUR-${tournamentId}`;
+            const desc = `Removed from ${t.title} (refunded)`;
+            db.prepare(
+              `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
+               VALUES (?, ?, 'refund', ?, 'credit', ?, 'completed', ?, ?)`
+            ).run(txCode, userId, t.entry_fee, nextBal, refId, desc);
+            txRow = {
+              tx_code: txCode,
+              type: 'refund',
+              amount: t.entry_fee,
+              direction: 'credit',
+              balance_after: nextBal,
+              status: 'completed',
+              reference_id: refId,
+              description: desc,
+            };
+          }
         }
 
-        return { status: 200 };
+        return { status: 200, txRow };
       }).immediate();
 
       if ('error' in result) {
@@ -3071,6 +3453,16 @@ app.delete(
       }
 
       recalculateAllUserPoints();
+      const fbToken = extractFirebaseIdToken(req);
+      if (fbToken) {
+        await commitAdminPlayerChangeToFirestore({
+          action: 'remove',
+          tournamentId,
+          targetUserId: userId,
+          txRow: result.txRow ?? null,
+          adminIdToken: fbToken,
+        }).catch(() => {});
+      }
       const updated = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as Record<
         string,
         unknown
@@ -3088,7 +3480,7 @@ function saveTournamentWinners(
   adminUserId: number,
   winnersInput: Array<{ userId?: unknown; placement?: unknown; prizeAmount?: unknown }>,
   allowReplace: boolean
-): { status: number; error?: string } {
+): { status: number; error?: string; txIdsCreated?: number[]; affectedUserIds?: number[] } {
   return db.transaction(() => {
     const t = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as
       | { id: number; title: string; status: string }
@@ -3136,7 +3528,6 @@ function saveTournamentWinners(
       (a, b) => Number(a.placement) - Number(b.placement)
     );
 
-    // Pre-validate all entries before reversing previous winners
     const parsedEntries: Array<{
       uid: number;
       placement: number;
@@ -3196,9 +3587,12 @@ function saveTournamentWinners(
       });
     }
 
-    // If admin is editing previously declared winners, safely reverse old payouts & wins
+    const txIdsCreated: number[] = [];
+    const affectedUserIdsSet = new Set<number>();
+
     if (allowReplace && previousWinners.length > 0) {
       for (const prev of previousWinners) {
+        affectedUserIdsSet.add(prev.user_id);
         if (prev.placement === 1) {
           db.prepare('UPDATE users SET wins = MAX(0, wins - 1) WHERE id = ?').run(prev.user_id);
         }
@@ -3213,7 +3607,7 @@ function saveTournamentWinners(
             db.prepare(
               "UPDATE wallet_accounts SET available_balance = ?, total_won = ?, updated_at = datetime('now') WHERE user_id = ?"
             ).run(reversedBal, reversedWon, prev.user_id);
-            db.prepare(
+            const revTx = db.prepare(
               `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
                VALUES (?, ?, 'admin_adjustment', ?, 'debit', ?, 'completed', ?, ?)`
             ).run(
@@ -3224,6 +3618,7 @@ function saveTournamentWinners(
               `TOUR-${tournamentId}`,
               `Winner update reversal (${rankLabels[prev.placement] || `#${prev.placement}`}) — ${t.title}`
             );
+            txIdsCreated.push(Number(revTx.lastInsertRowid));
           }
         }
       }
@@ -3231,7 +3626,7 @@ function saveTournamentWinners(
     }
 
     for (const item of parsedEntries) {
-      // Ensure winner appears in tournament roster if added directly by admin
+      affectedUserIdsSet.add(item.uid);
       const isReg = db
         .prepare('SELECT id FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?')
         .get(tournamentId, item.uid);
@@ -3272,7 +3667,7 @@ function saveTournamentWinners(
           "UPDATE wallet_accounts SET available_balance = ?, total_won = ?, updated_at = datetime('now') WHERE user_id = ?"
         ).run(nextBal, nextWon, item.uid);
 
-        db.prepare(
+        const prizeTx = db.prepare(
           `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
            VALUES (?, ?, 'prize_win', ?, 'credit', ?, 'completed', ?, ?)`
         ).run(
@@ -3283,11 +3678,16 @@ function saveTournamentWinners(
           `TOUR-${tournamentId}`,
           `${rankLabels[item.placement] || `#${item.placement} Winner`} — ${t.title}`
         );
+        txIdsCreated.push(Number(prizeTx.lastInsertRowid));
       }
     }
 
     db.prepare("UPDATE tournaments SET status = 'completed' WHERE id = ?").run(tournamentId);
-    return { status: 200 };
+    return {
+      status: 200,
+      txIdsCreated,
+      affectedUserIds: Array.from(affectedUserIdsSet),
+    };
   }).immediate();
 }
 
@@ -3313,6 +3713,15 @@ app.post('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, async 
     }
 
     recalculateAllUserPoints();
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitAdminTournamentWinnersToFirestore({
+        tournamentId,
+        txIdsCreated: result.txIdsCreated || [],
+        affectedUserIds: result.affectedUserIds || [],
+        adminIdToken: fbToken,
+      }).catch(() => {});
+    }
     const updated = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as Record<string, unknown>;
     res.json({ tournament: enrichTournament(updated, req.user!) });
   } catch (err) {
@@ -3343,6 +3752,15 @@ app.put('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, async (
     }
 
     recalculateAllUserPoints();
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitAdminTournamentWinnersToFirestore({
+        tournamentId,
+        txIdsCreated: result.txIdsCreated || [],
+        affectedUserIds: result.affectedUserIds || [],
+        adminIdToken: fbToken,
+      }).catch(() => {});
+    }
     const updated = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as Record<string, unknown>;
     res.json({ tournament: enrichTournament(updated, req.user!) });
   } catch (err) {
@@ -3352,7 +3770,11 @@ app.put('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, async (
 });
 
 // --- ADMIN DEPOSITS, WITHDRAWALS & LEDGER ---
-app.get('/api/admin/deposits', requireAuth, requireAdmin, (_req: AuthenticatedRequest, res: Response) => {
+app.get('/api/admin/deposits', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const fbToken = extractFirebaseIdToken(req);
+  if (fbToken) {
+    await hydrateAllAdminStateFromFirestore(fbToken);
+  }
   const deposits = db
     .prepare(
       `SELECT d.*, u.username, u.player_id, u.email
@@ -3364,9 +3786,13 @@ app.get('/api/admin/deposits', requireAuth, requireAdmin, (_req: AuthenticatedRe
   res.json({ deposits });
 });
 
-app.post('/api/admin/deposits/:id/review', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/admin/deposits/:id/review', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const depId = Number(req.params.id);
+    if (!Number.isInteger(depId) || depId <= 0) {
+      res.status(400).json({ error: 'Invalid deposit ID.' });
+      return;
+    }
     const action = req.body.action === 'approve' ? 'approve' : req.body.action === 'reject' ? 'reject' : null;
     const adminNote = typeof req.body.adminNote === 'string' ? req.body.adminNote.trim() : '';
 
@@ -3377,21 +3803,27 @@ app.post('/api/admin/deposits/:id/review', requireAuth, requireAdmin, (req: Auth
 
     const result = db.transaction(() => {
       const dep = db.prepare('SELECT * FROM deposits WHERE id = ?').get(depId) as
-        | { id: number; user_id: number; amount: number; status: string; transaction_ref: string }
+        | { id: number; user_id: number; amount: number; method: string; status: string; transaction_ref: string }
         | undefined;
       if (!dep) return { status: 404, error: 'Deposit request not found.' };
       if (dep.status !== 'pending') {
         return { status: 409, error: `Deposit has already been ${dep.status}.` };
       }
 
-      const nextStatus = action === 'approve' ? 'approved' : 'rejected';
-      db.prepare(
-        "UPDATE deposits SET status = ?, admin_note = ?, reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?"
-      ).run(nextStatus, adminNote, req.user!.id, depId);
+      const wallet = ensureAndReconcileWallet(dep.user_id);
+      if (!wallet) {
+        return { status: 404, error: 'Deposit owner account no longer exists.' };
+      }
 
-      const wallet = db
-        .prepare('SELECT available_balance, total_deposited FROM wallet_accounts WHERE user_id = ?')
-        .get(dep.user_id) as { available_balance: number; total_deposited: number };
+      const nextStatus = action === 'approve' ? 'approved' : 'rejected';
+      const depUpdate = db
+        .prepare(
+          "UPDATE deposits SET status = ?, admin_note = ?, reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ? AND status = 'pending'"
+        )
+        .run(nextStatus, adminNote, req.user!.id, depId);
+      if (depUpdate.changes === 0) {
+        return { status: 409, error: 'Deposit was already processed.' };
+      }
 
       if (action === 'approve') {
         const nextBal = wallet.available_balance + dep.amount;
@@ -3402,13 +3834,28 @@ app.post('/api/admin/deposits/:id/review', requireAuth, requireAdmin, (req: Auth
           "UPDATE wallet_accounts SET available_balance = ?, total_deposited = ?, updated_at = datetime('now') WHERE user_id = ?"
         ).run(nextBal, nextTotalDep, dep.user_id);
 
-        db.prepare(
-          "UPDATE transactions SET status = 'completed', balance_after = ? WHERE reference_id = ? AND type = 'deposit'"
-        ).run(nextBal, `DEP-${depId}`);
+        const txUpdate = db
+          .prepare(
+            "UPDATE transactions SET status = 'completed', balance_after = ? WHERE reference_id = ? AND type = 'deposit' AND user_id = ?"
+          )
+          .run(nextBal, `DEP-${depId}`, dep.user_id);
+        if (txUpdate.changes === 0) {
+          db.prepare(
+            `INSERT INTO transactions (tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description)
+             VALUES (?, ?, 'deposit', ?, 'credit', ?, 'completed', ?, ?)`
+          ).run(
+            generateTxCode(),
+            dep.user_id,
+            dep.amount,
+            nextBal,
+            `DEP-${depId}`,
+            `Approved deposit via ${(dep.method || 'wallet').replace('_', ' ')} (TID: ${dep.transaction_ref})`
+          );
+        }
       } else {
         db.prepare(
-          "UPDATE transactions SET status = 'rejected' WHERE reference_id = ? AND type = 'deposit'"
-        ).run(`DEP-${depId}`);
+          "UPDATE transactions SET status = 'rejected' WHERE reference_id = ? AND type = 'deposit' AND user_id = ?"
+        ).run(`DEP-${depId}`, dep.user_id);
       }
 
       return { status: 200 };
@@ -3418,6 +3865,10 @@ app.post('/api/admin/deposits/:id/review', requireAuth, requireAdmin, (req: Auth
       res.status(result.status).json({ error: result.error });
       return;
     }
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitAdminDepositReviewToFirestore(depId, fbToken).catch(() => {});
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error('Review deposit error:', err);
@@ -3425,7 +3876,11 @@ app.post('/api/admin/deposits/:id/review', requireAuth, requireAdmin, (req: Auth
   }
 });
 
-app.get('/api/admin/withdrawals', requireAuth, requireAdmin, (_req: AuthenticatedRequest, res: Response) => {
+app.get('/api/admin/withdrawals', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const fbToken = extractFirebaseIdToken(req);
+  if (fbToken) {
+    await hydrateAllAdminStateFromFirestore(fbToken);
+  }
   const withdrawals = db
     .prepare(
       `SELECT w.*, u.username, u.player_id, u.email
@@ -3437,9 +3892,13 @@ app.get('/api/admin/withdrawals', requireAuth, requireAdmin, (_req: Authenticate
   res.json({ withdrawals });
 });
 
-app.post('/api/admin/withdrawals/:id/review', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/admin/withdrawals/:id/review', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const wId = Number(req.params.id);
+    if (!Number.isInteger(wId) || wId <= 0) {
+      res.status(400).json({ error: 'Invalid withdrawal ID.' });
+      return;
+    }
     const action =
       req.body.action === 'approve'
         ? 'approve'
@@ -3472,13 +3931,10 @@ app.post('/api/admin/withdrawals/:id/review', requireAuth, requireAdmin, (req: A
         return { status: 409, error: `Withdrawal has already been ${wd.status}.` };
       }
 
-      const wallet = db
-        .prepare('SELECT available_balance, pending_withdrawal, total_withdrawn FROM wallet_accounts WHERE user_id = ?')
-        .get(wd.user_id) as {
-        available_balance: number;
-        pending_withdrawal: number;
-        total_withdrawn: number;
-      };
+      const wallet = ensureAndReconcileWallet(wd.user_id);
+      if (!wallet) {
+        return { status: 404, error: 'Player wallet not found.' };
+      }
 
       if (action === 'approve') {
         if (wd.status !== 'pending') {
@@ -3491,8 +3947,8 @@ app.post('/api/admin/withdrawals/:id/review', requireAuth, requireAdmin, (req: A
           "UPDATE withdrawals SET status = 'approved', admin_note = ?, reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?"
         ).run(adminNote || 'Approved for payout', req.user!.id, wId);
         db.prepare(
-          "UPDATE transactions SET status = 'approved' WHERE reference_id = ? AND type = 'withdrawal'"
-        ).run(`WD-${wId}`);
+          "UPDATE transactions SET status = 'approved' WHERE reference_id = ? AND type = 'withdrawal' AND user_id = ?"
+        ).run(`WD-${wId}`, wd.user_id);
         return { status: 200 };
       }
 
@@ -3525,8 +3981,8 @@ app.post('/api/admin/withdrawals/:id/review', requireAuth, requireAdmin, (req: A
               : 'JazzCash';
 
         db.prepare(
-          "UPDATE transactions SET status = 'paid', balance_after = ?, description = ? WHERE reference_id = ? AND type = 'withdrawal'"
-        ).run(nextBal, `Paid via ${methodLabel} (${wd.account_number})`, `WD-${wId}`);
+          "UPDATE transactions SET status = 'paid', balance_after = ?, description = ? WHERE reference_id = ? AND type = 'withdrawal' AND user_id = ?"
+        ).run(nextBal, `Paid via ${methodLabel} (${wd.account_number})`, `WD-${wId}`, wd.user_id);
       } else {
         db.prepare(
           "UPDATE withdrawals SET status = 'rejected', admin_note = ?, reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?"
@@ -3537,8 +3993,8 @@ app.post('/api/admin/withdrawals/:id/review', requireAuth, requireAdmin, (req: A
         ).run(nextPending, wd.user_id);
 
         db.prepare(
-          "UPDATE transactions SET status = 'rejected' WHERE reference_id = ? AND type = 'withdrawal'"
-        ).run(`WD-${wId}`);
+          "UPDATE transactions SET status = 'rejected' WHERE reference_id = ? AND type = 'withdrawal' AND user_id = ?"
+        ).run(`WD-${wId}`, wd.user_id);
       }
 
       return { status: 200 };
@@ -3548,6 +4004,10 @@ app.post('/api/admin/withdrawals/:id/review', requireAuth, requireAdmin, (req: A
       res.status(result.status).json({ error: result.error });
       return;
     }
+    const fbToken = extractFirebaseIdToken(req);
+    if (fbToken) {
+      await commitAdminWithdrawalReviewToFirestore(wId, fbToken).catch(() => {});
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error('Review withdrawal error:', err);
@@ -3555,7 +4015,11 @@ app.post('/api/admin/withdrawals/:id/review', requireAuth, requireAdmin, (req: A
   }
 });
 
-app.get('/api/admin/transactions', requireAuth, requireAdmin, (_req: AuthenticatedRequest, res: Response) => {
+app.get('/api/admin/transactions', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  const fbToken = extractFirebaseIdToken(req);
+  if (fbToken) {
+    await hydrateAllAdminStateFromFirestore(fbToken);
+  }
   const transactions = db
     .prepare(
       `SELECT t.*, u.username, u.player_id

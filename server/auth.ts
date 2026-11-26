@@ -35,6 +35,7 @@ function getSessionSecret(): string {
 
 export interface AuthUser {
   id: number;
+  firebase_uid: string;
   player_id: string;
   username: string;
   email: string;
@@ -116,6 +117,13 @@ export function revokePersistentSession(token: string): void {
     db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashSessionToken(token));
   } catch {
     // Ignore cleanup errors
+  }
+}
+
+export function revokeCookieSessionIfPresent(req: Request): void {
+  const cookieToken = getCookieValue(req, SESSION_COOKIE_NAME);
+  if (cookieToken) {
+    revokePersistentSession(cookieToken);
   }
 }
 
@@ -222,7 +230,7 @@ export function verifyToken(token: string): TokenPayload | null {
 }
 
 const USER_PUBLIC_COLUMNS = `
-  id, player_id, username, email, phone, avatar_url, role, is_blocked,
+  id, firebase_uid, player_id, username, email, phone, avatar_url, role, is_blocked,
   wallet_balance, matches_played, wins, kills, points, created_at
 `;
 
@@ -230,6 +238,13 @@ export function getUserById(userId: number): AuthUser | undefined {
   return db
     .prepare(`SELECT ${USER_PUBLIC_COLUMNS} FROM users WHERE id = ?`)
     .get(userId) as AuthUser | undefined;
+}
+
+export function extractFirebaseIdToken(req: Request): string {
+  const raw = req.headers['x-firebase-id-token'];
+  if (typeof raw === 'string') return raw.trim();
+  if (Array.isArray(raw) && typeof raw[0] === 'string') return raw[0].trim();
+  return '';
 }
 
 export function resolveAuthToken(
@@ -264,23 +279,20 @@ function getSessionUserId(token: string): number | null {
 function resolveValidAuthSession(
   req: Request
 ): { uid: number; source: 'bearer' | 'cookie'; hasAnyToken: boolean } {
-  let hasAnyToken = false;
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const bearer = authHeader.slice(7).trim();
     if (bearer) {
-      hasAnyToken = true;
       const uid = getSessionUserId(bearer);
-      if (uid) return { uid, source: 'bearer', hasAnyToken: true };
+      return { uid: uid || 0, source: 'bearer', hasAnyToken: true };
     }
   }
   const cookieToken = getCookieValue(req, SESSION_COOKIE_NAME);
   if (cookieToken) {
-    hasAnyToken = true;
     const uid = getSessionUserId(cookieToken);
-    if (uid) return { uid, source: 'cookie', hasAnyToken: true };
+    return { uid: uid || 0, source: 'cookie', hasAnyToken: true };
   }
-  return { uid: 0, source: 'bearer', hasAnyToken };
+  return { uid: 0, source: 'bearer', hasAnyToken: false };
 }
 
 function hasValidCookieCsrf(req: Request): boolean {

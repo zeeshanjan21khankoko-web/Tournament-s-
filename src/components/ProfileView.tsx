@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 import { AVATAR_PRESETS, apiRequest, readImageFileAsDataUrl } from '../lib/api';
 import { syncOwnUserToFirestore } from '../lib/firestoreSync';
-import { PWAInstallButton } from './PWAInstallBanner';
 import type { UserProfile } from '../types';
 
 const WHATSAPP_CHANNEL_URL = 'https://whatsapp.com/channel/0029Vb65xZMCXC3OiHIqik2a';
@@ -248,7 +247,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       </section>
 
       {/* 3. 3-Column Quick Action Tiles (EDIT PROFILE / PASSWORD / LIVE CHAT) (Matches Screenshot 4) */}
-      <section className="grid grid-cols-3 gap-3">
+      <section className="grid grid-cols-3 gap-2 sm:gap-3">
         <button
           type="button"
           onClick={() => {
@@ -259,10 +258,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             setProfileMsg('');
             setModal('edit');
           }}
-          className="bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/50 rounded-2xl py-4 px-2 flex flex-col items-center justify-center gap-2 transition-colors ff-card-glow"
+          className="min-w-0 bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/50 rounded-2xl py-3.5 sm:py-4 px-1.5 sm:px-2 flex flex-col items-center justify-center gap-2 transition-colors ff-card-glow"
         >
-          <Edit3 className="w-5 h-5 text-[#FACC15]" />
-          <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-300">
+          <Edit3 className="w-5 h-5 text-[#FACC15] shrink-0" />
+          <span className="text-[9px] sm:text-xs font-bold uppercase tracking-normal sm:tracking-wider text-slate-300 truncate max-w-full">
             EDIT PROFILE
           </span>
         </button>
@@ -274,10 +273,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             setPwMsg('');
             setModal('password');
           }}
-          className="bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/50 rounded-2xl py-4 px-2 flex flex-col items-center justify-center gap-2 transition-colors ff-card-glow"
+          className="min-w-0 bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/50 rounded-2xl py-3.5 sm:py-4 px-1.5 sm:px-2 flex flex-col items-center justify-center gap-2 transition-colors ff-card-glow"
         >
-          <KeyRound className="w-5 h-5 text-[#FACC15]" />
-          <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-300">
+          <KeyRound className="w-5 h-5 text-[#FACC15] shrink-0" />
+          <span className="text-[9px] sm:text-xs font-bold uppercase tracking-normal sm:tracking-wider text-slate-300 truncate max-w-full">
             PASSWORD
           </span>
         </button>
@@ -289,10 +288,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             setChatMsg('');
             setModal('chat');
           }}
-          className="bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/50 rounded-2xl py-4 px-2 flex flex-col items-center justify-center gap-2 transition-colors ff-card-glow"
+          className="min-w-0 bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/50 rounded-2xl py-3.5 sm:py-4 px-1.5 sm:px-2 flex flex-col items-center justify-center gap-2 transition-colors ff-card-glow"
         >
-          <Headphones className="w-5 h-5 text-[#FACC15]" />
-          <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-300">
+          <Headphones className="w-5 h-5 text-[#FACC15] shrink-0" />
+          <span className="text-[9px] sm:text-xs font-bold uppercase tracking-normal sm:tracking-wider text-slate-300 truncate max-w-full">
             LIVE CHAT
           </span>
         </button>
@@ -305,7 +304,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           <span>Account Info</span>
         </h2>
 
-        <div className="bg-[#131A29] border border-white/[0.08] rounded-2xl divide-y divide-white/[0.06]">
+        <div className="bg-[#131A29] border border-white/[0.08] rounded-2xl divide-y divide-white/[0.06] overflow-hidden">
           <div className="p-4 flex items-center gap-3.5">
             <div className="w-10 h-10 rounded-xl bg-[#FACC15]/10 border border-[#FACC15]/20 flex items-center justify-center text-[#FACC15] shrink-0">
               <Mail className="w-4 h-4" />
@@ -419,10 +418,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         </div>
       </section>
 
-      {/* Account Session Actions (Admin Panel if admin, PWA Install, Sign Out) */}
+      {/* Account Session Actions (Admin Panel if admin, Sign Out) */}
       <section className="flex flex-wrap items-center justify-between gap-3 pt-1">
         <div className="flex flex-wrap items-center gap-2.5">
-          <PWAInstallButton />
           {user.role === 'admin' && onOpenAdmin && (
             <button
               type="button"

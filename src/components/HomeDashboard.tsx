@@ -31,7 +31,7 @@ import {
   getYouTubeThumbnailUrl,
 } from '../lib/api';
 import { PrizeBreakdownStrip, WinnersPodium } from './WinnersPodium';
-import { DownloadTournamentAppButton } from './PWAInstallBanner';
+import { DownloadTournamentAppButton, usePWAInstall } from './PWAInstallBanner';
 import type {
   AnnouncementRecord,
   LeaderboardEntry,
@@ -108,6 +108,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
   const [slideIdx, setSlideIdx] = useState(0);
   const [videoModalOpen, setVideoModalOpen] = useState(false);
   const [selectedVideoId, setSelectedVideoId] = useState<number | null>(null);
+  const { isInstalled } = usePWAInstall();
 
   const upcomingMatches = useMemo(
     () => tournaments.filter((t) => t.status === 'upcoming' || t.status === 'live'),
@@ -312,22 +313,22 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
       </section>
 
       {/* 2. Wallet Balance & Total Earnings Cards (Matches Screenshot 1) */}
-      <section className="grid grid-cols-2 gap-3 sm:gap-4">
+      <section className="grid grid-cols-2 gap-2.5 sm:gap-4">
         <button
           type="button"
           onClick={() => (user ? onOpenWallet('deposit') : onOpenAuth())}
-          className="text-left bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/45 rounded-2xl p-3.5 sm:p-5 flex items-center gap-3 transition-all ff-card-glow"
+          className="min-w-0 overflow-hidden text-left bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/45 rounded-2xl p-3 sm:p-5 flex items-center gap-2.5 sm:gap-3 transition-all ff-card-glow"
         >
-          <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-[#FACC15]/15 border border-[#FACC15]/25 flex items-center justify-center text-[#FACC15] shrink-0">
-            <Wallet className="w-5 h-5 sm:w-6 sm:h-6" />
+          <div className="w-9 h-9 sm:w-12 sm:h-12 rounded-xl bg-[#FACC15]/15 border border-[#FACC15]/25 flex items-center justify-center text-[#FACC15] shrink-0">
+            <Wallet className="w-4 h-4 sm:w-6 sm:h-6" />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="text-[11px] sm:text-xs text-slate-400 font-medium truncate">
               Wallet Balance
             </div>
-            <div className="font-display text-base sm:text-xl font-extrabold text-white tabular-nums mt-0.5 truncate">
+            <div className="font-display text-sm sm:text-xl font-extrabold text-white tabular-nums mt-0.5 truncate">
               {balanceCoins.toLocaleString('en-PK')}{' '}
-              <span className="text-xs sm:text-sm font-medium text-slate-400">Coins</span>
+              <span className="text-[11px] sm:text-sm font-medium text-slate-400">Coins</span>
             </div>
           </div>
         </button>
@@ -335,16 +336,16 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
         <button
           type="button"
           onClick={() => (user ? onOpenWallet('winnings') : onOpenAuth())}
-          className="text-left bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/45 rounded-2xl p-3.5 sm:p-5 flex items-center gap-3 transition-all ff-card-glow"
+          className="min-w-0 overflow-hidden text-left bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/45 rounded-2xl p-3 sm:p-5 flex items-center gap-2.5 sm:gap-3 transition-all ff-card-glow"
         >
-          <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-[#FACC15]/15 border border-[#FACC15]/25 flex items-center justify-center text-[#FACC15] shrink-0">
-            <HandCoins className="w-5 h-5 sm:w-6 sm:h-6" />
+          <div className="w-9 h-9 sm:w-12 sm:h-12 rounded-xl bg-[#FACC15]/15 border border-[#FACC15]/25 flex items-center justify-center text-[#FACC15] shrink-0">
+            <HandCoins className="w-4 h-4 sm:w-6 sm:h-6" />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="text-[11px] sm:text-xs text-slate-400 font-medium truncate">
               Total Earnings
             </div>
-            <div className="font-display text-sm sm:text-xl font-extrabold text-white tabular-nums mt-0.5 leading-tight">
+            <div className="font-display text-xs sm:text-xl font-extrabold text-white tabular-nums mt-0.5 leading-tight truncate">
               Earned: {totalEarned.toLocaleString('en-PK')} Rs
             </div>
           </div>
@@ -365,10 +366,12 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
         </motion.button>
       </section>
 
-      {/* 3b. Separate Download Tournament App Section (Android APK if available, else PWA Install) */}
-      <section aria-label="Download Tournament App">
-        <DownloadTournamentAppButton variant="card" />
-      </section>
+      {/* 3b. Smart Download Tournament App Section (automatically hidden when installed) */}
+      {!isInstalled && (
+        <section aria-label="Download Tournament App">
+          <DownloadTournamentAppButton variant="card" />
+        </section>
+      )}
 
       {/* 4. Upcoming Matches Section (Matches Screenshot 1) */}
       <section className="space-y-3">
@@ -400,10 +403,10 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   key={t.id}
                   whileHover={{ y: -2 }}
                   onClick={() => onSelectTournament(t)}
-                  className="cursor-pointer bg-[#131A29] border border-white/[0.08] rounded-2xl p-4 space-y-3 ff-card-glow"
+                  className="min-w-0 overflow-hidden cursor-pointer bg-[#131A29] border border-white/[0.08] rounded-2xl p-3.5 sm:p-4 space-y-3 ff-card-glow"
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
+                  <div className="flex items-start justify-between gap-2 min-w-0">
+                    <div className="min-w-0 flex-1">
                       <h3 className="font-display text-sm sm:text-base font-extrabold text-white truncate">
                         {t.title}
                       </h3>
@@ -433,22 +436,22 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between pt-2 border-t border-white/[0.06]">
-                    <div>
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/[0.06]">
+                    <div className="min-w-0">
                       <div className="text-[10px] uppercase tracking-wider text-slate-400">ENTRY</div>
-                      <div className="font-mono text-sm font-extrabold text-white tabular-nums">
+                      <div className="font-mono text-xs sm:text-sm font-extrabold text-white tabular-nums">
                         {t.entry_fee === 0 ? '0 PKR' : formatPKR(t.entry_fee)}
                       </div>
                     </div>
-                    <div className="text-center">
+                    <div className="text-center min-w-0">
                       <div className="text-[10px] uppercase tracking-wider text-slate-400">SLOTS</div>
-                      <div className="font-mono text-xs font-bold text-slate-200 tabular-nums">
+                      <div className="font-mono text-[11px] sm:text-xs font-bold text-slate-200 tabular-nums">
                         {slotsLeft} left ({t.filled_slots}/{t.max_slots})
                       </div>
                     </div>
-                    <div className="text-right">
+                    <div className="text-right min-w-0">
                       <div className="text-[10px] uppercase tracking-wider text-slate-400">TOTAL PRIZE</div>
-                      <div className="font-mono text-sm font-extrabold text-[#FACC15] tabular-nums">
+                      <div className="font-mono text-xs sm:text-sm font-extrabold text-[#FACC15] tabular-nums">
                         {t.prize_pool} PKR
                       </div>
                     </div>
@@ -550,10 +553,10 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                 key={t.id}
                 whileHover={{ y: -2 }}
                 onClick={() => onSelectTournament(t)}
-                className="cursor-pointer bg-[#131A29] border border-white/[0.08] rounded-2xl p-4 space-y-3 ff-card-glow"
+                className="min-w-0 overflow-hidden cursor-pointer bg-[#131A29] border border-white/[0.08] rounded-2xl p-3.5 sm:p-4 space-y-3 ff-card-glow"
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 space-y-1.5">
+                <div className="flex items-start justify-between gap-2 sm:gap-3 min-w-0">
+                  <div className="min-w-0 flex-1 space-y-1.5">
                     <h3 className="font-display text-sm sm:text-base font-extrabold text-white uppercase leading-snug truncate">
                       {t.title}
                     </h3>
@@ -646,13 +649,13 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           href={WHATSAPP_CHANNEL_URL}
           target="_blank"
           rel="noopener noreferrer"
-          className="bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/45 rounded-2xl p-4 flex items-center justify-between gap-3 transition-colors"
+          className="min-w-0 overflow-hidden bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/45 rounded-2xl p-3.5 sm:p-4 flex items-center justify-between gap-3 transition-colors"
         >
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
             <div className="w-10 h-10 rounded-xl bg-[#FACC15]/15 text-[#FACC15] flex items-center justify-center shrink-0">
               <Sparkles className="w-5 h-5" />
             </div>
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <div className="text-xs font-bold text-white truncate">
                 Official WhatsApp Channel
               </div>
@@ -671,9 +674,9 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           <button
             type="button"
             onClick={() => setVideoModalOpen(true)}
-            className="text-left bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/45 rounded-2xl p-4 flex items-center justify-between gap-3 transition-colors"
+            className="min-w-0 overflow-hidden text-left bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/45 rounded-2xl p-3.5 sm:p-4 flex items-center justify-between gap-3 transition-colors"
           >
-            <div className="flex items-center gap-3 min-w-0">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
               <div className="relative w-14 h-10 rounded-lg overflow-hidden bg-[#0D1320] shrink-0">
                 <img
                   src={getYouTubeThumbnailUrl(activeVideo.video_id)}
@@ -685,7 +688,7 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   <Play className="w-4 h-4 text-[#FACC15] fill-current" />
                 </div>
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="text-xs font-bold text-white truncate">{activeVideo.title}</div>
                 <div className="text-[11px] text-slate-400 truncate">
                   Watch Free Fire tournament highlights ({videos.length} video{videos.length > 1 ? 's' : ''})
@@ -700,13 +703,13 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           <button
             type="button"
             onClick={() => onNavigate('leaderboard')}
-            className="text-left bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/45 rounded-2xl p-4 flex items-center justify-between gap-3 transition-colors"
+            className="min-w-0 overflow-hidden text-left bg-[#131A29] border border-white/[0.08] hover:border-[#FACC15]/45 rounded-2xl p-3.5 sm:p-4 flex items-center justify-between gap-3 transition-colors"
           >
-            <div className="flex items-center gap-3 min-w-0">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
               <div className="w-10 h-10 rounded-xl bg-[#FACC15]/15 text-[#FACC15] flex items-center justify-center shrink-0">
                 <Trophy className="w-5 h-5" />
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="text-xs font-bold text-white truncate">Season Leaderboard</div>
                 <div className="text-[11px] text-slate-400 truncate">
                   Track Top 3 champions, wins, kills &amp; points

@@ -3,7 +3,7 @@ import { signInWithPopup } from 'firebase/auth';
 import { Eye, EyeOff, KeyRound, ShieldCheck, Upload, UserPlus, LogIn, X } from 'lucide-react';
 import { AVATAR_PRESETS, apiRequest, readImageFileAsDataUrl } from '../lib/api';
 import { auth, googleProvider } from '../lib/firebase';
-import { syncOwnUserToFirestore } from '../lib/firestoreSync';
+import { signOutFirebaseAdmin, syncOwnUserToFirestore } from '../lib/firestoreSync';
 import type { UserProfile } from '../types';
 
 interface AuthViewProps {
@@ -87,18 +87,21 @@ export const AuthView: React.FC<AuthViewProps> = ({
           method: 'POST',
           body: { identifier, password },
         });
+        await signOutFirebaseAdmin().catch(() => {});
         onSuccess(res.token, res.user);
       } else if (mode === 'register') {
         const res = await apiRequest<{ token: string; user: UserProfile }>('/api/auth/register', {
           method: 'POST',
           body: { username, email, phone: phone.trim(), password, avatarUrl },
         });
+        await signOutFirebaseAdmin().catch(() => {});
         onSuccess(res.token, res.user);
       } else {
         const res = await apiRequest<{ token: string; user: UserProfile }>('/api/auth/claim-admin', {
           method: 'POST',
           body: { username, email, password, passcode },
         });
+        await signOutFirebaseAdmin().catch(() => {});
         onSuccess(res.token, res.user);
       }
     } catch (err) {
@@ -109,7 +112,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
   };
 
   return (
-    <div className="w-full max-w-md mx-auto bg-[#131A29] border border-white/[0.12] rounded-2xl p-6 shadow-2xl">
+    <div className="w-full max-w-md mx-auto bg-[#131A29] border border-white/[0.12] rounded-2xl p-4 sm:p-6 shadow-2xl overflow-hidden">
       <div className="flex items-start justify-between gap-4 mb-5">
         <div>
           <h2 className="font-display text-xl font-bold text-white tracking-tight">

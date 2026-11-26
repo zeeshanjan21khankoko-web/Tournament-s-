@@ -143,45 +143,45 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
       </div>
 
       {/* 2. 4-Column Counters (TOTAL / UPCOMING / LIVE / JOINED) (Matches Screenshot 2) */}
-      <div className="grid grid-cols-4 gap-2.5 sm:gap-4">
-        <div className="bg-[#131A29] border border-white/[0.08] rounded-2xl py-3 px-2 sm:p-4 text-center">
-          <div className="font-display text-lg sm:text-2xl font-extrabold text-[#FACC15] tabular-nums">
+      <div className="grid grid-cols-4 gap-2 sm:gap-4">
+        <div className="min-w-0 bg-[#131A29] border border-white/[0.08] rounded-2xl py-2.5 px-1.5 sm:p-4 text-center">
+          <div className="font-display text-base sm:text-2xl font-extrabold text-[#FACC15] tabular-nums">
             {counters.total}
           </div>
-          <div className="text-[9px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 mt-0.5">
+          <div className="text-[9px] sm:text-[11px] font-bold uppercase tracking-normal sm:tracking-wider text-slate-400 mt-0.5 truncate">
             TOTAL
           </div>
         </div>
-        <div className="bg-[#131A29] border border-white/[0.08] rounded-2xl py-3 px-2 sm:p-4 text-center">
-          <div className="font-display text-lg sm:text-2xl font-extrabold text-[#F59E0B] tabular-nums">
+        <div className="min-w-0 bg-[#131A29] border border-white/[0.08] rounded-2xl py-2.5 px-1.5 sm:p-4 text-center">
+          <div className="font-display text-base sm:text-2xl font-extrabold text-[#F59E0B] tabular-nums">
             {counters.upcoming}
           </div>
-          <div className="text-[9px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 mt-0.5">
+          <div className="text-[9px] sm:text-[11px] font-bold uppercase tracking-normal sm:tracking-wider text-slate-400 mt-0.5 truncate">
             UPCOMING
           </div>
         </div>
-        <div className="bg-[#131A29] border border-white/[0.08] rounded-2xl py-3 px-2 sm:p-4 text-center">
-          <div className="font-display text-lg sm:text-2xl font-extrabold text-[#22C55E] tabular-nums">
+        <div className="min-w-0 bg-[#131A29] border border-white/[0.08] rounded-2xl py-2.5 px-1.5 sm:p-4 text-center">
+          <div className="font-display text-base sm:text-2xl font-extrabold text-[#22C55E] tabular-nums">
             {counters.live}
           </div>
-          <div className="text-[9px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 mt-0.5">
+          <div className="text-[9px] sm:text-[11px] font-bold uppercase tracking-normal sm:tracking-wider text-slate-400 mt-0.5 truncate">
             LIVE
           </div>
         </div>
-        <div className="bg-[#131A29] border border-white/[0.08] rounded-2xl py-3 px-2 sm:p-4 text-center">
-          <div className="font-display text-lg sm:text-2xl font-extrabold text-[#FACC15] tabular-nums">
+        <div className="min-w-0 bg-[#131A29] border border-white/[0.08] rounded-2xl py-2.5 px-1.5 sm:p-4 text-center">
+          <div className="font-display text-base sm:text-2xl font-extrabold text-[#FACC15] tabular-nums">
             {counters.joined}
           </div>
-          <div className="text-[9px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400 mt-0.5">
+          <div className="text-[9px] sm:text-[11px] font-bold uppercase tracking-normal sm:tracking-wider text-slate-400 mt-0.5 truncate">
             JOINED
           </div>
         </div>
       </div>
 
       {/* 3. Game & Status Filter Rows (Matches Screenshot 2) */}
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2 overflow-x-auto pb-0.5">
+      <div className="space-y-3 min-w-0">
+        <div className="flex flex-wrap items-center justify-between gap-2.5 min-w-0">
+          <div className="flex items-center gap-2 overflow-x-auto max-w-full pb-0.5">
             <button
               type="button"
               onClick={() => setGameFilter('all')}
@@ -380,7 +380,7 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
                   setJoinSuccess('');
                   onSelectTournament(t);
                 }}
-                className="group cursor-pointer bg-[#131A29] border border-white/[0.08] rounded-2xl overflow-hidden flex flex-col ff-card-glow"
+                className="min-w-0 group cursor-pointer bg-[#131A29] border border-white/[0.08] rounded-2xl overflow-hidden flex flex-col ff-card-glow"
               >
                 <div className="relative aspect-video bg-[#0D1320] overflow-hidden">
                   <img
@@ -460,20 +460,20 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
                       </div>
                     </div>
 
-                    <div className="pt-3 border-t border-white/[0.08] flex items-center justify-between gap-2">
-                      <div>
+                    <div className="pt-3 border-t border-white/[0.08] flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
                         <div className="text-[10px] uppercase tracking-wider text-slate-400">
                           Total Prize
                         </div>
-                        <div className="font-mono text-sm font-extrabold text-[#FACC15] tabular-nums">
+                        <div className="font-mono text-xs sm:text-sm font-extrabold text-[#FACC15] tabular-nums">
                           {formatPKR(t.prize_pool)}
                         </div>
                       </div>
-                      <div className="text-center">
+                      <div className="text-center min-w-0">
                         <div className="text-[10px] uppercase tracking-wider text-slate-400">
                           Entry Fee
                         </div>
-                        <div className="font-mono text-sm font-bold text-white tabular-nums">
+                        <div className="font-mono text-xs sm:text-sm font-bold text-white tabular-nums">
                           {t.entry_fee === 0 ? 'Free' : formatPKR(t.entry_fee)}
                         </div>
                       </div>
@@ -486,7 +486,7 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
                           setJoinSuccess('');
                           onSelectTournament(t);
                         }}
-                        className={`min-h-[42px] px-3.5 py-2 rounded-xl text-xs font-extrabold whitespace-nowrap transition-all ${
+                        className={`min-h-[40px] sm:min-h-[42px] px-3 sm:px-3.5 py-2 rounded-xl text-[11px] sm:text-xs font-extrabold whitespace-nowrap shrink-0 transition-all ${
                           t.is_registered
                             ? 'bg-[#22C55E]/15 border border-[#22C55E]/45 text-[#4ADE80]'
                             : t.status === 'upcoming' || t.status === 'live'
@@ -526,7 +526,7 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
               exit={{ opacity: 0, y: 16, scale: 0.98 }}
               transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full sm:max-w-2xl max-h-[90vh] overflow-y-auto bg-[#131A29] border border-white/[0.12] rounded-t-3xl sm:rounded-2xl shadow-2xl"
+              className="w-full sm:max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden bg-[#131A29] border border-white/[0.12] rounded-t-3xl sm:rounded-2xl shadow-2xl"
             >
               <div className="relative h-44 sm:h-52 bg-[#0D1320]">
                 <img
@@ -551,7 +551,7 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
                 </button>
               </div>
 
-              <div className="p-5 sm:p-6 space-y-6">
+              <div className="p-4 sm:p-6 space-y-5 sm:space-y-6">
                 <div>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mb-1.5">
                     <span
@@ -577,11 +577,11 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
                       {formatPktDateTime(selectedTournament.match_time)}
                     </span>
                   </div>
-                  <h2 className="font-display text-2xl font-bold text-white">
+                  <h2 className="font-display text-xl sm:text-2xl font-bold text-white break-words">
                     {selectedTournament.title}
                   </h2>
                   {selectedTournament.rules && (
-                    <p className="text-sm text-slate-300 mt-2 leading-relaxed">
+                    <p className="text-sm text-slate-300 mt-2 leading-relaxed break-words">
                       {selectedTournament.rules}
                     </p>
                   )}
@@ -615,26 +615,26 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
                 </div>
 
                 {/* Key Stats */}
-                <div className="grid grid-cols-3 gap-3 bg-[#0D1320] border border-white/[0.08] rounded-xl p-4">
-                  <div>
-                    <div className="text-xs text-slate-400">Prize Pool</div>
-                    <div className="font-mono text-base sm:text-lg font-bold text-[#FACC15] tabular-nums">
+                <div className="grid grid-cols-3 gap-2 sm:gap-3 bg-[#0D1320] border border-white/[0.08] rounded-xl p-3 sm:p-4">
+                  <div className="min-w-0">
+                    <div className="text-[11px] sm:text-xs text-slate-400 truncate">Prize Pool</div>
+                    <div className="font-mono text-sm sm:text-lg font-bold text-[#FACC15] tabular-nums break-words">
                       {formatPKR(selectedTournament.prize_pool)}
                     </div>
                   </div>
-                  <div>
-                    <div className="text-xs text-slate-400">Entry Fee</div>
-                    <div className="font-mono text-base sm:text-lg font-bold text-white tabular-nums">
+                  <div className="min-w-0">
+                    <div className="text-[11px] sm:text-xs text-slate-400 truncate">Entry Fee</div>
+                    <div className="font-mono text-sm sm:text-lg font-bold text-white tabular-nums break-words">
                       {selectedTournament.entry_fee === 0
                         ? 'Free'
                         : formatPKR(selectedTournament.entry_fee)}
                     </div>
                   </div>
-                  <div>
-                    <div className="text-xs text-slate-400">Available Slots</div>
-                    <div className="font-mono text-base sm:text-lg font-bold text-[#4ADE80] tabular-nums">
+                  <div className="min-w-0">
+                    <div className="text-[11px] sm:text-xs text-slate-400 truncate">Available Slots</div>
+                    <div className="font-mono text-sm sm:text-lg font-bold text-[#4ADE80] tabular-nums break-words">
                       {Math.max(0, selectedTournament.max_slots - selectedTournament.filled_slots)}{' '}
-                      <span className="text-xs font-normal text-slate-400">
+                      <span className="text-[11px] sm:text-xs font-normal text-slate-400">
                         ({selectedTournament.filled_slots}/{selectedTournament.max_slots})
                       </span>
                     </div>

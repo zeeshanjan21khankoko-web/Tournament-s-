@@ -66,12 +66,14 @@ service cloud.firestore {
     function isValidUserPrivateProfile(data, userId) {
       return data.keys().hasAll(['uid', 'email', 'username', 'player_id', 'role', 'created_at', 'updated_at']) &&
         data.keys().hasOnly([
-          'uid', 'sqlite_id', 'email', 'username', 'player_id', 'phone', 'avatar_url',
-          'role', 'is_blocked', 'wallet_balance', 'matches_played', 'wins', 'points',
-          'created_at', 'updated_at'
+          'uid', 'sqlite_id', 'firebase_uid', 'email', 'username', 'player_id', 'phone', 'avatar_url',
+          'role', 'is_blocked', 'wallet_balance', 'pending_withdrawal', 'total_deposited',
+          'total_withdrawn', 'total_won', 'matches_played', 'wins', 'kills', 'points',
+          'last_lucky_draw_pkt', 'last_lucky_draw_at', 'created_at', 'updated_at'
         ]) &&
         data.uid is string && data.uid == userId && isValidId(data.uid) &&
         (!('sqlite_id' in data) || (data.sqlite_id is int && data.sqlite_id >= 1)) &&
+        (!('firebase_uid' in data) || (data.firebase_uid is string && data.firebase_uid.size() <= 128)) &&
         data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
         data.username is string && data.username.size() >= 2 && data.username.size() <= 32 &&
         data.player_id is string && data.player_id.size() >= 3 && data.player_id.size() <= 32 &&
@@ -80,9 +82,16 @@ service cloud.firestore {
         data.role in ['player', 'admin'] &&
         (!('is_blocked' in data) || data.is_blocked in [0, 1]) &&
         (!('wallet_balance' in data) || (data.wallet_balance is int && data.wallet_balance >= 0)) &&
+        (!('pending_withdrawal' in data) || (data.pending_withdrawal is int && data.pending_withdrawal >= 0)) &&
+        (!('total_deposited' in data) || (data.total_deposited is int && data.total_deposited >= 0)) &&
+        (!('total_withdrawn' in data) || (data.total_withdrawn is int && data.total_withdrawn >= 0)) &&
+        (!('total_won' in data) || (data.total_won is int && data.total_won >= 0)) &&
         (!('matches_played' in data) || (data.matches_played is int && data.matches_played >= 0)) &&
         (!('wins' in data) || (data.wins is int && data.wins >= 0)) &&
+        (!('kills' in data) || (data.kills is int && data.kills >= 0)) &&
         (!('points' in data) || (data.points is int && data.points >= 0)) &&
+        (!('last_lucky_draw_pkt' in data) || (data.last_lucky_draw_pkt is string && data.last_lucky_draw_pkt.size() <= 16)) &&
+        (!('last_lucky_draw_at' in data) || data.last_lucky_draw_at is timestamp) &&
         data.created_at is timestamp &&
         data.updated_at is timestamp;
     }
@@ -135,14 +144,148 @@ service cloud.firestore {
 
     function isValidTournamentRegistration(data, userId) {
       return data.keys().hasAll(['user_uid', 'player_id', 'in_game_name', 'in_game_id', 'slot_number', 'status', 'registered_at']) &&
-        data.keys().hasOnly(['user_uid', 'player_id', 'in_game_name', 'in_game_id', 'slot_number', 'status', 'registered_at']) &&
+        data.keys().hasOnly([
+          'tournament_id', 'user_uid', 'sqlite_user_id', 'player_id',
+          'username', 'in_game_name', 'in_game_id', 'slot_number', 'status', 'registered_at'
+        ]) &&
+        (!('tournament_id' in data) || (data.tournament_id is int && data.tournament_id >= 1)) &&
         data.user_uid is string && data.user_uid == userId && isValidId(data.user_uid) &&
+        (!('sqlite_user_id' in data) || (data.sqlite_user_id is int && data.sqlite_user_id >= 1)) &&
         data.player_id is string && data.player_id.size() >= 3 && data.player_id.size() <= 32 &&
+        (!('username' in data) || (data.username is string && data.username.size() <= 32)) &&
         data.in_game_name is string && data.in_game_name.size() >= 1 && data.in_game_name.size() <= 64 &&
         data.in_game_id is string && data.in_game_id.size() >= 1 && data.in_game_id.size() <= 64 &&
         data.slot_number is int && data.slot_number >= 1 && data.slot_number <= 500 &&
         data.status in ['registered', 'disqualified'] &&
         data.registered_at is timestamp;
+    }
+
+    function isValidDeposit(data, depositId) {
+      return data.keys().hasAll([
+          'deposit_key', 'user_uid', 'player_id', 'username', 'email', 'amount',
+          'method', 'transaction_ref', 'sender_account', 'status', 'admin_note', 'created_at'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'deposit_key', 'user_uid', 'sqlite_user_id', 'player_id', 'username', 'email',
+          'amount', 'method', 'transaction_ref', 'sender_account', 'has_screenshot',
+          'screenshot_preview', 'status', 'admin_note', 'tx_code', 'reviewed_at', 'created_at'
+        ]) &&
+        (!('id' in data) || (data.id is int && data.id >= 1)) &&
+        data.deposit_key is string && data.deposit_key == depositId && isValidId(data.deposit_key) &&
+        data.user_uid is string && isValidId(data.user_uid) &&
+        (!('sqlite_user_id' in data) || (data.sqlite_user_id is int && data.sqlite_user_id >= 1)) &&
+        data.player_id is string && data.player_id.size() >= 3 && data.player_id.size() <= 32 &&
+        data.username is string && data.username.size() >= 2 && data.username.size() <= 32 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.amount is int && data.amount >= 1 && data.amount <= 1000000 &&
+        data.method in ['jazzcash', 'easypaisa'] &&
+        data.transaction_ref is string && data.transaction_ref.size() >= 4 && data.transaction_ref.size() <= 64 &&
+        data.sender_account is string && data.sender_account.size() >= 4 && data.sender_account.size() <= 64 &&
+        (!('has_screenshot' in data) || data.has_screenshot is bool) &&
+        (!('screenshot_preview' in data) || (data.screenshot_preview is string && data.screenshot_preview.size() <= 450000)) &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        data.admin_note is string && data.admin_note.size() <= 250 &&
+        (!('tx_code' in data) || (data.tx_code is string && data.tx_code.size() <= 64)) &&
+        (!('reviewed_at' in data) || (data.reviewed_at is string && data.reviewed_at.size() <= 64)) &&
+        data.created_at is timestamp;
+    }
+
+    function isValidWithdrawal(data, withdrawalId) {
+      return data.keys().hasAll([
+          'withdrawal_key', 'user_uid', 'player_id', 'username', 'email', 'amount',
+          'method', 'bank_name', 'account_title', 'account_number', 'status', 'admin_note', 'created_at'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'withdrawal_key', 'user_uid', 'sqlite_user_id', 'player_id', 'username', 'email',
+          'amount', 'method', 'bank_name', 'account_title', 'account_number',
+          'status', 'admin_note', 'tx_code', 'reviewed_at', 'created_at'
+        ]) &&
+        (!('id' in data) || (data.id is int && data.id >= 1)) &&
+        data.withdrawal_key is string && data.withdrawal_key == withdrawalId && isValidId(data.withdrawal_key) &&
+        data.user_uid is string && isValidId(data.user_uid) &&
+        (!('sqlite_user_id' in data) || (data.sqlite_user_id is int && data.sqlite_user_id >= 1)) &&
+        data.player_id is string && data.player_id.size() >= 3 && data.player_id.size() <= 32 &&
+        data.username is string && data.username.size() >= 2 && data.username.size() <= 32 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.amount is int && data.amount >= 1 && data.amount <= 1000000 &&
+        data.method in ['jazzcash', 'easypaisa', 'bank_account'] &&
+        data.bank_name is string && data.bank_name.size() <= 64 &&
+        data.account_title is string && data.account_title.size() >= 2 && data.account_title.size() <= 64 &&
+        data.account_number is string && data.account_number.size() >= 6 && data.account_number.size() <= 34 &&
+        data.status in ['pending', 'approved', 'rejected', 'paid'] &&
+        data.admin_note is string && data.admin_note.size() <= 250 &&
+        (!('tx_code' in data) || (data.tx_code is string && data.tx_code.size() <= 64)) &&
+        (!('reviewed_at' in data) || (data.reviewed_at is string && data.reviewed_at.size() <= 64)) &&
+        data.created_at is timestamp;
+    }
+
+    function isValidLedgerTransaction(data, txCode) {
+      return data.keys().hasAll([
+          'tx_code', 'user_uid', 'type', 'amount', 'direction',
+          'balance_after', 'status', 'reference_id', 'description', 'created_at'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'tx_code', 'user_uid', 'sqlite_user_id', 'player_id', 'username',
+          'type', 'amount', 'direction', 'balance_after', 'status',
+          'reference_id', 'description', 'created_at'
+        ]) &&
+        (!('id' in data) || (data.id is int && data.id >= 1)) &&
+        data.tx_code is string && data.tx_code == txCode && data.tx_code.size() >= 4 && data.tx_code.size() <= 64 &&
+        isValidId(data.tx_code) &&
+        data.user_uid is string && isValidId(data.user_uid) &&
+        (!('sqlite_user_id' in data) || (data.sqlite_user_id is int && data.sqlite_user_id >= 1)) &&
+        (!('player_id' in data) || (data.player_id is string && data.player_id.size() <= 32)) &&
+        (!('username' in data) || (data.username is string && data.username.size() <= 32)) &&
+        data.type in [
+          'deposit', 'withdrawal', 'entry_fee', 'prize_win', 'refund',
+          'admin_adjustment', 'transfer_out', 'transfer_in', 'lucky_draw'
+        ] &&
+        data.amount is int && data.amount >= 0 && data.amount <= 10000000 &&
+        data.direction in ['credit', 'debit'] &&
+        data.balance_after is int && data.balance_after >= 0 &&
+        data.status in ['pending', 'approved', 'paid', 'completed', 'rejected'] &&
+        data.reference_id is string && data.reference_id.size() <= 64 &&
+        data.description is string && data.description.size() >= 1 && data.description.size() <= 300 &&
+        data.created_at is timestamp;
+    }
+
+    function isValidLuckyDrawEntry(data, drawKey) {
+      return data.keys().hasAll(['user_uid', 'draw_date_pkt', 'prize_amount', 'prize_label', 'created_at']) &&
+        data.keys().hasOnly(['user_uid', 'sqlite_user_id', 'draw_date_pkt', 'prize_amount', 'prize_label', 'created_at']) &&
+        data.user_uid is string && isValidId(data.user_uid) &&
+        (!('sqlite_user_id' in data) || (data.sqlite_user_id is int && data.sqlite_user_id >= 1)) &&
+        data.draw_date_pkt is string && data.draw_date_pkt.size() == 10 &&
+        drawKey == (data.user_uid + '_' + data.draw_date_pkt) &&
+        data.prize_amount is int && data.prize_amount >= 0 && data.prize_amount <= 50 &&
+        data.prize_label is string && data.prize_label.size() >= 1 && data.prize_label.size() <= 64 &&
+        data.created_at is timestamp;
+    }
+
+    function isValidTeamRegistration(data, regCode) {
+      return data.keys().hasAll([
+          'registration_code', 'tournament_id', 'leader_name', 'freefire_uid',
+          'whatsapp_number', 'team_name', 'squad_type', 'payment_method', 'payment_ref', 'status', 'created_at'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'registration_code', 'tournament_id', 'user_uid', 'sqlite_user_id',
+          'leader_name', 'freefire_uid', 'whatsapp_number', 'team_name', 'squad_type',
+          'teammates', 'payment_method', 'payment_ref', 'status', 'created_at'
+        ]) &&
+        (!('id' in data) || (data.id is int && data.id >= 1)) &&
+        data.registration_code is string && data.registration_code == regCode && isValidId(data.registration_code) &&
+        data.tournament_id is int && data.tournament_id >= 1 &&
+        (!('user_uid' in data) || (data.user_uid is string && data.user_uid.size() <= 128)) &&
+        (!('sqlite_user_id' in data) || (data.sqlite_user_id is int && data.sqlite_user_id >= 1)) &&
+        data.leader_name is string && data.leader_name.size() >= 2 && data.leader_name.size() <= 64 &&
+        data.freefire_uid is string && data.freefire_uid.size() >= 4 && data.freefire_uid.size() <= 32 &&
+        data.whatsapp_number is string && data.whatsapp_number.size() >= 6 && data.whatsapp_number.size() <= 24 &&
+        data.team_name is string && data.team_name.size() >= 2 && data.team_name.size() <= 64 &&
+        data.squad_type in ['Solo', 'Duo', 'Squad'] &&
+        (!('teammates' in data) || (data.teammates is string && data.teammates.size() <= 500)) &&
+        data.payment_method in ['free', 'wallet', 'jazzcash', 'easypaisa'] &&
+        data.payment_ref is string && data.payment_ref.size() <= 64 &&
+        data.status in ['pending', 'confirmed', 'rejected'] &&
+        data.created_at is timestamp;
     }
 
     function isValidAnnouncement(data) {
@@ -228,6 +371,13 @@ service cloud.firestore {
             incoming().points == existing().points &&
             incoming().updated_at == request.time &&
             incoming().diff(existing()).affectedKeys().hasOnly(['username', 'avatar_url', 'updated_at'])) ||
+          (isOwner(userId) &&
+            incoming().uid == existing().uid &&
+            incoming().player_id == existing().player_id &&
+            incoming().points >= existing().points &&
+            incoming().points <= existing().points + 10 &&
+            incoming().updated_at == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['points', 'updated_at'])) ||
           (isAdmin() &&
             incoming().uid == existing().uid &&
             incoming().updated_at == request.time)
@@ -235,46 +385,229 @@ service cloud.firestore {
       allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin() && userId != request.auth.uid;
     }
 
-    // Private PII-isolated user records (protected against automated or non-admin deletion)
+    // Private PII-isolated user records & authoritative wallet balances
     match /users/{userId} {
-      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
-      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow get: if isSignedIn() && isValidId(userId) && (
+        isOwner(userId) ||
+        isAdmin() ||
+        (isVerifiedUser() && existing().email == request.auth.token.email)
+      );
+      allow list: if isBootstrappedAdmin() ||
+        (isSignedIn() && resource.data.uid == request.auth.uid) ||
+        (isVerifiedUser() && resource.data.email == request.auth.token.email);
       allow create: if isVerifiedUser() && isValidId(userId) &&
         isValidUserPrivateProfile(incoming(), userId) &&
         incoming().created_at == request.time &&
         incoming().updated_at == request.time && (
           (isOwner(userId) &&
             incoming().role == 'player' &&
+            incoming().email == request.auth.token.email &&
+            (!('firebase_uid' in incoming()) || incoming().firebase_uid == request.auth.uid) &&
             (!('is_blocked' in incoming()) || incoming().is_blocked == 0) &&
             (!('wallet_balance' in incoming()) || incoming().wallet_balance == 0) &&
+            (!('pending_withdrawal' in incoming()) || incoming().pending_withdrawal == 0) &&
+            (!('total_deposited' in incoming()) || incoming().total_deposited == 0) &&
+            (!('total_withdrawn' in incoming()) || incoming().total_withdrawn == 0) &&
+            (!('total_won' in incoming()) || incoming().total_won == 0) &&
             (!('matches_played' in incoming()) || incoming().matches_played == 0) &&
             (!('wins' in incoming()) || incoming().wins == 0) &&
+            (!('kills' in incoming()) || incoming().kills == 0) &&
             (!('points' in incoming()) || incoming().points == 0)) ||
           (isAdmin() && (incoming().role == 'player' || isBootstrappedAdmin()))
         );
       allow update: if isVerifiedUser() && isValidId(userId) &&
-        isValidUserPrivateProfile(incoming(), userId) && (
-          (isOwner(userId) &&
-            incoming().uid == existing().uid &&
-            incoming().role == existing().role &&
-            incoming().created_at == existing().created_at &&
-            incoming().updated_at == request.time &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['username', 'phone', 'avatar_url', 'updated_at'])) ||
+        isValidUserPrivateProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().created_at == existing().created_at &&
+        incoming().updated_at == request.time && (
+          // Action 1: Admin full operational update (approvals, balance adjustments, stats, role)
           (isAdmin() &&
-            incoming().uid == existing().uid &&
-            incoming().created_at == existing().created_at &&
-            incoming().updated_at == request.time &&
+            (incoming().role == existing().role || isBootstrappedAdmin()) &&
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'sqlite_id', 'username', 'phone', 'avatar_url', 'role', 'is_blocked',
-              'wallet_balance', 'matches_played', 'wins', 'points', 'updated_at'
-            ]) &&
-            (incoming().role == existing().role || isBootstrappedAdmin()))
+              'sqlite_id', 'firebase_uid', 'username', 'phone', 'avatar_url', 'role', 'is_blocked',
+              'wallet_balance', 'pending_withdrawal', 'total_deposited', 'total_withdrawn',
+              'total_won', 'matches_played', 'wins', 'kills', 'points', 'updated_at'
+            ])) ||
+          // Action 2: Owner profile-only update (never touches wallet or stats)
+          (isOwner(userId) &&
+            incoming().role == existing().role &&
+            (!('firebase_uid' in incoming()) || incoming().firebase_uid == request.auth.uid) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'sqlite_id', 'firebase_uid', 'username', 'phone', 'avatar_url', 'updated_at'
+            ])) ||
+          // Action 3: Owner spend-only debit (tournament entry fee or P2P send) - cannot increase wallet_balance
+          (isOwner(userId) &&
+            incoming().role == existing().role &&
+            'wallet_balance' in incoming() &&
+            (!('is_blocked' in existing()) || existing().is_blocked == 0) &&
+            (!('wallet_balance' in existing()) ? 0 : existing().wallet_balance) >= incoming().wallet_balance &&
+            incoming().wallet_balance >= (!('pending_withdrawal' in existing()) ? 0 : existing().pending_withdrawal) &&
+            (!('matches_played' in incoming()) || incoming().matches_played <= ((!('matches_played' in existing()) ? 0 : existing().matches_played) + 1)) &&
+            (!('points' in incoming()) || incoming().points <= ((!('points' in existing()) ? 0 : existing().points) + 10)) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'wallet_balance', 'matches_played', 'points', 'updated_at'
+            ])) ||
+          // Action 4: Owner withdrawal hold lock (increases pending_withdrawal only up to available balance)
+          (isOwner(userId) &&
+            incoming().role == existing().role &&
+            'pending_withdrawal' in incoming() &&
+            (!('is_blocked' in existing()) || existing().is_blocked == 0) &&
+            incoming().pending_withdrawal >= (!('pending_withdrawal' in existing()) ? 0 : existing().pending_withdrawal) &&
+            incoming().pending_withdrawal <= (!('wallet_balance' in existing()) ? 0 : existing().wallet_balance) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['pending_withdrawal', 'updated_at'])) ||
+          // Action 5: Owner Daily Lucky Draw claim (max PKR 50 once per 20h)
+          (isOwner(userId) &&
+            incoming().role == existing().role &&
+            'wallet_balance' in incoming() &&
+            'last_lucky_draw_pkt' in incoming() &&
+            'last_lucky_draw_at' in incoming() &&
+            (!('is_blocked' in existing()) || existing().is_blocked == 0) &&
+            (!('last_lucky_draw_at' in existing()) || request.time >= existing().last_lucky_draw_at + duration.value(20, 'h')) &&
+            incoming().last_lucky_draw_at == request.time &&
+            (!('last_lucky_draw_pkt' in existing()) || incoming().last_lucky_draw_pkt != existing().last_lucky_draw_pkt) &&
+            incoming().wallet_balance >= (!('wallet_balance' in existing()) ? 0 : existing().wallet_balance) &&
+            incoming().wallet_balance <= ((!('wallet_balance' in existing()) ? 0 : existing().wallet_balance) + 50) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'wallet_balance', 'last_lucky_draw_pkt', 'last_lucky_draw_at', 'updated_at'
+            ])) ||
+          // Action 6: Atomic P2P credit to recipient backed by equal debit from sender's own wallet
+          (userId != request.auth.uid &&
+            incoming().role == existing().role &&
+            'wallet_balance' in incoming() &&
+            (!('is_blocked' in existing()) || existing().is_blocked == 0) &&
+            incoming().wallet_balance > (!('wallet_balance' in existing()) ? 0 : existing().wallet_balance) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['wallet_balance', 'updated_at']) &&
+            getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.wallet_balance ==
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.wallet_balance -
+              (incoming().wallet_balance - (!('wallet_balance' in existing()) ? 0 : existing().wallet_balance)))
         );
       allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin() &&
         userId != request.auth.uid && existing().email != 'zeeshanjan21khankoko@gmail.com';
     }
 
-    // Tournaments: Public read catalog (no PII/secrets); STRICTLY Admin-only create/update/delete
+    // Permanent Deposit Records
+    match /deposits/{depositId} {
+      allow get: if isSignedIn() && isValidId(depositId) && (existing().user_uid == request.auth.uid || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.user_uid == request.auth.uid);
+      allow create: if isVerifiedUser() && isValidId(depositId) &&
+        isValidDeposit(incoming(), depositId) &&
+        incoming().created_at == request.time && (
+          (incoming().user_uid == request.auth.uid &&
+            incoming().status == 'pending' &&
+            incoming().admin_note == '') ||
+          isAdmin()
+        );
+      allow update: if isVerifiedUser() && isValidId(depositId) &&
+        isValidDeposit(incoming(), depositId) &&
+        isAdmin() &&
+        incoming().deposit_key == existing().deposit_key &&
+        incoming().user_uid == existing().user_uid &&
+        incoming().amount == existing().amount &&
+        incoming().transaction_ref == existing().transaction_ref &&
+        incoming().created_at == existing().created_at &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'id', 'status', 'admin_note', 'tx_code', 'reviewed_at'
+        ]);
+      allow delete: if false;
+    }
+
+    // Permanent Withdrawal Records
+    match /withdrawals/{withdrawalId} {
+      allow get: if isSignedIn() && isValidId(withdrawalId) && (existing().user_uid == request.auth.uid || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.user_uid == request.auth.uid);
+      allow create: if isVerifiedUser() && isValidId(withdrawalId) &&
+        isValidWithdrawal(incoming(), withdrawalId) &&
+        incoming().created_at == request.time && (
+          (incoming().user_uid == request.auth.uid &&
+            incoming().status == 'pending' &&
+            incoming().admin_note == '') ||
+          isAdmin()
+        );
+      allow update: if isVerifiedUser() && isValidId(withdrawalId) &&
+        isValidWithdrawal(incoming(), withdrawalId) &&
+        isAdmin() &&
+        incoming().withdrawal_key == existing().withdrawal_key &&
+        incoming().user_uid == existing().user_uid &&
+        incoming().amount == existing().amount &&
+        incoming().created_at == existing().created_at &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'id', 'status', 'admin_note', 'tx_code', 'reviewed_at'
+        ]);
+      allow delete: if false;
+    }
+
+    // Permanent Wallet Transaction Ledger
+    match /transactions/{txCode} {
+      allow get: if isSignedIn() && isValidId(txCode) && (existing().user_uid == request.auth.uid || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.user_uid == request.auth.uid);
+      allow create: if isVerifiedUser() && isValidId(txCode) &&
+        isValidLedgerTransaction(incoming(), txCode) &&
+        incoming().created_at == request.time && (
+          isAdmin() ||
+          (incoming().user_uid == request.auth.uid && (
+            (incoming().type in ['deposit', 'withdrawal'] && incoming().status == 'pending') ||
+            (incoming().type in ['entry_fee', 'transfer_out'] && incoming().direction == 'debit' && incoming().status == 'completed') ||
+            (incoming().type == 'lucky_draw' && incoming().direction == 'credit' && incoming().amount <= 50 && incoming().status == 'completed')
+          )) ||
+          (incoming().type == 'transfer_in' &&
+            incoming().direction == 'credit' &&
+            incoming().status == 'completed' &&
+            incoming().user_uid != request.auth.uid &&
+            getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.wallet_balance ==
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.wallet_balance - incoming().amount &&
+            getAfter(/databases/$(database)/documents/users/$(incoming().user_uid)).data.wallet_balance ==
+              get(/databases/$(database)/documents/users/$(incoming().user_uid)).data.wallet_balance + incoming().amount)
+        );
+      allow update: if isVerifiedUser() && isValidId(txCode) &&
+        isValidLedgerTransaction(incoming(), txCode) &&
+        isAdmin() &&
+        incoming().tx_code == existing().tx_code &&
+        incoming().user_uid == existing().user_uid &&
+        incoming().type == existing().type &&
+        incoming().amount == existing().amount &&
+        incoming().direction == existing().direction &&
+        incoming().created_at == existing().created_at &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'id', 'status', 'balance_after', 'description', 'reference_id'
+        ]);
+      allow delete: if false;
+    }
+
+    // Daily Lucky Draw Claims
+    match /lucky_draws/{drawKey} {
+      allow get: if isSignedIn() && isValidId(drawKey) && (existing().user_uid == request.auth.uid || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.user_uid == request.auth.uid);
+      allow create: if isVerifiedUser() && isValidId(drawKey) &&
+        isValidLuckyDrawEntry(incoming(), drawKey) &&
+        incoming().created_at == request.time && (
+          (incoming().user_uid == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.last_lucky_draw_pkt == incoming().draw_date_pkt &&
+            getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.last_lucky_draw_at == request.time) ||
+          isAdmin()
+        );
+      allow update, delete: if false;
+    }
+
+    // Team / Squad Registrations
+    match /team_registrations/{regCode} {
+      allow get: if isSignedIn() && isValidId(regCode) && (existing().user_uid == request.auth.uid || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.user_uid == request.auth.uid);
+      allow create: if isVerifiedUser() && isValidId(regCode) &&
+        isValidTeamRegistration(incoming(), regCode) &&
+        incoming().created_at == request.time && (
+          (incoming().user_uid == request.auth.uid && incoming().status == 'pending') ||
+          isAdmin()
+        );
+      allow update: if isVerifiedUser() && isValidId(regCode) &&
+        isValidTeamRegistration(incoming(), regCode) &&
+        isAdmin() &&
+        incoming().registration_code == existing().registration_code &&
+        incoming().created_at == existing().created_at &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['id', 'status', 'user_uid', 'sqlite_user_id']);
+      allow delete: if isVerifiedUser() && isValidId(regCode) && isAdmin();
+    }
+
+    // Tournaments: Public read catalog (no PII/secrets); Admin writes + atomic player slot increment on join
     match /tournaments/{tournamentId} {
       allow get: if isValidId(tournamentId);
       allow list: if true;
@@ -289,14 +622,21 @@ service cloud.firestore {
         incoming().id == existing().id &&
         incoming().created_by_uid == existing().created_by_uid &&
         incoming().created_at == existing().created_at &&
-        incoming().updated_at == request.time &&
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'title', 'game_name', 'mode', 'entry_fee', 'prize_pool',
-          'prize_1st', 'prize_2nd', 'prize_3rd', 'prize_4th', 'prize_5th',
-          'max_slots', 'filled_slots', 'match_time', 'end_time', 'status',
-          'banner_url', 'rules', 'winners', 'updated_at'
-        ]) &&
-        isAdmin();
+        incoming().updated_at == request.time && (
+          (isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'game_name', 'mode', 'entry_fee', 'prize_pool',
+              'prize_1st', 'prize_2nd', 'prize_3rd', 'prize_4th', 'prize_5th',
+              'max_slots', 'filled_slots', 'match_time', 'end_time', 'status',
+              'banner_url', 'rules', 'winners', 'updated_at'
+            ])) ||
+          (existing().status in ['upcoming', 'live'] &&
+            incoming().filled_slots == existing().filled_slots + 1 &&
+            incoming().filled_slots <= existing().max_slots &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['filled_slots', 'updated_at']) &&
+            !exists(/databases/$(database)/documents/tournaments/$(tournamentId)/registrations/$(request.auth.uid)) &&
+            existsAfter(/databases/$(database)/documents/tournaments/$(tournamentId)/registrations/$(request.auth.uid)))
+        );
       allow delete: if isVerifiedUser() && isValidId(tournamentId) && isAdmin();
 
       // Room secrets: only Admin or registered players of the parent tournament
@@ -317,18 +657,43 @@ service cloud.firestore {
         allow delete: if isVerifiedUser() && isValidId(tournamentId) && isValidId(secretId) && isAdmin();
       }
 
-      // Participant registrations: Master Gate checks parent tournament exists
+      // Participant registrations: permanent once joined; only Admin can modify or remove
       match /registrations/{userId} {
         allow get: if isSignedIn() && isValidId(tournamentId) && isValidId(userId) &&
           exists(/databases/$(database)/documents/tournaments/$(tournamentId)) &&
           (isOwner(userId) || isAdmin());
         allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.user_uid == request.auth.uid);
-        allow create, update: if isVerifiedUser() && isValidId(tournamentId) && isValidId(userId) &&
+        allow create: if isVerifiedUser() && isValidId(tournamentId) && isValidId(userId) &&
           isValidTournamentRegistration(incoming(), userId) &&
-          exists(/databases/$(database)/documents/tournaments/$(tournamentId)) &&
+          incoming().registered_at == request.time &&
+          exists(/databases/$(database)/documents/tournaments/$(tournamentId)) && (
+            isAdmin() ||
+            (isOwner(userId) &&
+              incoming().status == 'registered' &&
+              get(/databases/$(database)/documents/tournaments/$(tournamentId)).data.status in ['upcoming', 'live'] &&
+              getAfter(/databases/$(database)/documents/tournaments/$(tournamentId)).data.filled_slots ==
+                get(/databases/$(database)/documents/tournaments/$(tournamentId)).data.filled_slots + 1 &&
+              (get(/databases/$(database)/documents/tournaments/$(tournamentId)).data.entry_fee == 0 ||
+                getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.wallet_balance ==
+                  get(/databases/$(database)/documents/users/$(request.auth.uid)).data.wallet_balance -
+                  get(/databases/$(database)/documents/tournaments/$(tournamentId)).data.entry_fee))
+          );
+        allow update: if isVerifiedUser() && isValidId(tournamentId) && isValidId(userId) &&
+          isValidTournamentRegistration(incoming(), userId) &&
+          incoming().user_uid == existing().user_uid &&
+          incoming().registered_at == existing().registered_at &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'tournament_id', 'sqlite_user_id', 'player_id', 'username', 'in_game_name', 'in_game_id', 'slot_number', 'status'
+          ]) &&
           isAdmin();
         allow delete: if isVerifiedUser() && isValidId(tournamentId) && isValidId(userId) && isAdmin();
       }
+    }
+
+    // Collection-group access for hydrating a user's own permanent registrations (and admin backup sync)
+    match /{path=**}/registrations/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || existing().user_uid == request.auth.uid || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.user_uid == request.auth.uid);
     }
 
     // Announcements: Public read, Admin-only write

@@ -37,7 +37,8 @@ import {
   subscribeTournamentPolicyFromFirestore,
   subscribeTournamentsFromFirestore,
 } from './lib/firestoreSync';
-import { DownloadTournamentAppButton, OfflineIndicator } from './components/PWAInstallBanner';
+import { auth } from './lib/firebase';
+import { OfflineIndicator } from './components/PWAInstallBanner';
 import { AuthView } from './components/AuthView';
 import { HomeDashboard } from './components/HomeDashboard';
 import { TournamentsView } from './components/TournamentsView';
@@ -172,6 +173,8 @@ export default function App() {
   const [walletSubTab, setWalletSubTab] = useState<WalletSubTab>('history');
   const [paymentChannels, setPaymentChannels] = useState<PaymentChannel[]>([]);
 
+  const authEpochRef = useRef<number>(0);
+  const manualLogoutRef = useRef<boolean>(false);
   const lastPublicSyncRef = useRef<number>(0);
   const cloudTournamentsRef = useRef<Tournament[]>([]);
   const selectedTournamentIdRef = useRef<number | null>(null);
@@ -181,7 +184,8 @@ export default function App() {
       : null
   );
 
-  // Restore persistent server session (HttpOnly cookie) once on app launch
+  // Restore persistent server session (HttpOnly cookie) once on app launch,
+  // with transparent Firebase Auth re-hydration if server container restarted
   useEffect(() => {
     let active = true;
     (async () => {
@@ -199,11 +203,46 @@ export default function App() {
       } catch (err) {
         if (!active) return;
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-          setToken(null);
-          setUser(null);
-          setActiveTab((prev) =>
-            prev === 'wallet' || prev === 'profile' || prev === 'admin' ? 'home' : prev
-          );
+          let recovered = false;
+          if (!manualLogoutRef.current) {
+            try {
+              await auth.authStateReady();
+              const fbUser = auth.currentUser;
+              if (fbUser && fbUser.emailVerified && !manualLogoutRef.current) {
+                const fbIdToken = await fbUser.getIdToken();
+                if (fbIdToken) {
+                  const reauthRes = await apiRequest<{
+                    token: string;
+                    user: UserProfile;
+                    wallet?: WalletAccount;
+                  }>('/api/auth/firebase-google', {
+                    method: 'POST',
+                    body: { idToken: fbIdToken },
+                    headers: { 'X-Firebase-Id-Token': fbIdToken },
+                  });
+                  if (!active) return;
+                  if (!manualLogoutRef.current && reauthRes?.user && reauthRes?.token) {
+                    setToken(reauthRes.token);
+                    setUser(reauthRes.user);
+                    setWallet(reauthRes.wallet || null);
+                    setActiveTab((prev) =>
+                      prev === 'admin' && reauthRes.user.role !== 'admin' ? 'home' : prev
+                    );
+                    recovered = true;
+                  }
+                }
+              }
+            } catch {
+              // Silent recovery failed — fall back to signed-out UI
+            }
+          }
+          if (!recovered && active) {
+            setToken(null);
+            setUser(null);
+            setActiveTab((prev) =>
+              prev === 'wallet' || prev === 'profile' || prev === 'admin' ? 'home' : prev
+            );
+          }
         }
       } finally {
         if (active) setAuthChecked(true);
@@ -477,6 +516,7 @@ export default function App() {
   }, []);
 
   const loadUserAndWallet = useCallback(async (authToken: string | null) => {
+    const callEpoch = authEpochRef.current;
     if (!authToken) {
       setWallet(null);
       setDeposits([]);
@@ -499,9 +539,7 @@ export default function App() {
           paymentChannels: PaymentChannel[];
         }>('/api/wallet', { token: authToken }),
       ]);
-      if (meRes.token) {
-        setToken((prev) => (meRes.token && meRes.token !== prev ? meRes.token : prev));
-      }
+      if (authEpochRef.current !== callEpoch) return;
       setUser((prev) => (sameJson(prev, meRes.user) ? prev : meRes.user));
       setWallet((prev) => (sameJson(prev, walletRes.wallet) ? prev : walletRes.wallet));
       setDeposits((prev) => (sameJson(prev, walletRes.deposits) ? prev : walletRes.deposits));
@@ -517,9 +555,15 @@ export default function App() {
         sameJson(prev, walletRes.paymentChannels) ? prev : walletRes.paymentChannels
       );
     } catch (err) {
+      if (authEpochRef.current !== callEpoch) return;
       if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
         setToken(null);
         setUser(null);
+        setWallet(null);
+        setDeposits([]);
+        setWithdrawals([]);
+        setTransactions([]);
+        setWinnings([]);
       }
     }
   }, []);
@@ -562,12 +606,23 @@ export default function App() {
   }, [authChecked, loadUserAndWallet, token]);
 
   const handleAuthSuccess = (newToken: string, newUser: UserProfile) => {
+    authEpochRef.current += 1;
+    if (user?.id !== newUser.id) {
+      setWallet(null);
+      setDeposits([]);
+      setWithdrawals([]);
+      setTransactions([]);
+      setWinnings([]);
+    }
     setToken(newToken);
+    manualLogoutRef.current = false;
     setUser(newUser);
     setShowAuthModal(false);
   };
 
   const handleLogout = async () => {
+    manualLogoutRef.current = true;
+    authEpochRef.current += 1;
     apiRequest('/api/auth/logout', { method: 'POST', token }).catch(() => {});
     signOutFirebaseAdmin().catch(() => {});
     setToken(null);
@@ -871,12 +926,12 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-transparent text-slate-100 flex flex-col">
+    <div className="min-h-screen w-full max-w-full overflow-x-clip bg-transparent text-slate-100 flex flex-col">
       {/* Top Bar */}
-      <header className="sticky top-0 z-40 h-14 lg:h-16 bg-[#0A0E17]/95 backdrop-blur-md border-b border-white/[0.07]">
-        <div className="max-w-7xl mx-auto h-full px-3.5 sm:px-6 flex items-center justify-between gap-3">
+      <header className="sticky top-0 z-40 h-14 lg:h-16 w-full max-w-full bg-[#0A0E17]/95 backdrop-blur-md border-b border-white/[0.07]">
+        <div className="max-w-7xl mx-auto h-full px-3 sm:px-6 flex items-center justify-between gap-2 sm:gap-3 min-w-0">
           {/* Mobile Screen-Specific Header Left / Desktop Brand */}
-          <div className="lg:hidden min-w-0 flex-1">{renderMobileHeaderLeft()}</div>
+          <div className="lg:hidden min-w-0 flex-1 overflow-hidden">{renderMobileHeaderLeft()}</div>
 
           <button
             type="button"
@@ -924,9 +979,8 @@ export default function App() {
             )}
           </nav>
 
-          {/* Right Actions (Bell on Home + Download App + Admin chip if admin + Rs. Balance Pill) */}
-          <div className="flex items-center gap-2 shrink-0">
-            <DownloadTournamentAppButton variant="header" className="hidden sm:inline-flex" />
+          {/* Right Actions (Bell on Home + Admin chip if admin + Rs. Balance Pill) */}
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {activeTab === 'home' && (
               <button
                 type="button"
@@ -935,7 +989,7 @@ export default function App() {
                   setUnreadAckCount(announcements.length);
                 }}
                 aria-label="Notifications"
-                className="relative w-9 h-9 rounded-full bg-[#131A29] border border-white/[0.1] hover:border-[#FACC15]/50 flex items-center justify-center text-[#FACC15] transition-colors"
+                className="relative w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#131A29] border border-white/[0.1] hover:border-[#FACC15]/50 flex items-center justify-center text-[#FACC15] transition-colors shrink-0"
               >
                 <Bell className="w-4 h-4 fill-current" />
                 {unreadCount > 0 && (
@@ -950,10 +1004,10 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => handleNavigate('admin')}
-                className="lg:hidden min-h-[34px] px-2.5 rounded-full bg-[#FACC15]/15 border border-[#FACC15]/50 text-[#FACC15] text-[11px] font-bold inline-flex items-center gap-1"
+                className="lg:hidden min-h-[32px] px-2 sm:px-2.5 rounded-full bg-[#FACC15]/15 border border-[#FACC15]/50 text-[#FACC15] text-[10px] sm:text-[11px] font-bold inline-flex items-center gap-1 shrink-0"
                 aria-label="Open Admin Panel"
               >
-                <Shield className="w-3.5 h-3.5" />
+                <Shield className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
                 <span>Admin</span>
               </button>
             )}
@@ -963,7 +1017,7 @@ export default function App() {
                 type="button"
                 whileTap={{ scale: 0.96 }}
                 onClick={() => handleNavigate('wallet')}
-                className="min-h-[34px] px-3 py-1 rounded-full bg-[#1B1910] border border-[#FACC15]/55 hover:border-[#FACC15] text-xs font-display font-extrabold text-[#FACC15] inline-flex items-center whitespace-nowrap shrink-0 tabular-nums transition-colors"
+                className="min-h-[32px] sm:min-h-[34px] px-2.5 sm:px-3 py-1 rounded-full bg-[#1B1910] border border-[#FACC15]/55 hover:border-[#FACC15] text-[11px] sm:text-xs font-display font-extrabold text-[#FACC15] inline-flex items-center whitespace-nowrap shrink-0 tabular-nums transition-colors"
               >
                 {formatRs(user.wallet_balance)}
               </motion.button>
@@ -972,7 +1026,7 @@ export default function App() {
                 type="button"
                 whileTap={{ scale: 0.96 }}
                 onClick={() => setShowAuthModal(true)}
-                className="min-h-[34px] px-3.5 py-1 rounded-full ff-btn-ember text-xs font-extrabold whitespace-nowrap shrink-0 transition-all"
+                className="min-h-[32px] sm:min-h-[34px] px-3 sm:px-3.5 py-1 rounded-full ff-btn-ember text-[11px] sm:text-xs font-extrabold whitespace-nowrap shrink-0 transition-all"
               >
                 Sign In
               </motion.button>
@@ -984,10 +1038,11 @@ export default function App() {
       <OfflineIndicator />
 
       {/* Main Content */}
-      <main className="flex-1 max-w-6xl w-full mx-auto px-3.5 sm:px-6 pt-4 sm:pt-6 pb-24 lg:pb-12">
+      <main className="flex-1 w-full max-w-6xl min-w-0 mx-auto px-3 sm:px-6 pt-3.5 sm:pt-6 pb-24 lg:pb-12">
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}
+            className="w-full min-w-0"
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}

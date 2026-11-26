@@ -294,6 +294,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const count = await getFirestoreTournamentCount();
       setFirebaseTourCount(count);
       setNotice(`Firebase Admin verified (${res.email}). All manual tournament changes now persist to Firebase.`);
+      await Promise.all([loadAdminData(), onRefreshPublic()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to verify Firebase Admin.');
     } finally {
@@ -946,7 +947,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const nextDeletedIds = res.deletedUserIds || [...deletedUserIds, deleteUserTarget.id];
       setDeletedUserIds(nextDeletedIds);
       if (isFirebaseAdminUser()) {
-        await deleteUserFromFirestore(deleteUserTarget.id).catch(() => {});
+        await deleteUserFromFirestore(deleteUserTarget.id, deleteUserTarget.firebase_uid).catch(() => {});
         await saveUserPolicyToFirestore(nextDeletedIds).catch(() => {});
       }
 
@@ -1138,9 +1139,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const previewVideoId = extractYouTubeVideoId(vUrl);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div>
+    <div className="space-y-6 min-w-0 w-full max-w-full overflow-x-hidden">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 min-w-0">
+        <div className="min-w-0">
           <h1 className="font-display text-2xl sm:text-3xl font-bold text-white">
             Admin Operations Console
           </h1>
@@ -1149,7 +1150,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-1 p-1 bg-[#131A29] border border-white/[0.08] rounded-xl overflow-x-auto">
+        <div className="flex items-center gap-1 p-1 bg-[#131A29] border border-white/[0.08] rounded-xl overflow-x-auto max-w-full">
           {(
             [
               { id: 'overview', label: 'Reports' },
@@ -1887,9 +1888,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               {deposits.map((d) => (
                 <div
                   key={d.id}
-                  className="bg-[#0D1320] border border-white/[0.08] rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4"
+                  className="bg-[#0D1320] border border-white/[0.08] rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 min-w-0 overflow-hidden"
                 >
-                  <div className="space-y-1">
+                  <div className="space-y-1 min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
                       <span className="text-white font-semibold">{d.username}</span>
                       <span className="font-mono">{d.player_id}</span>
@@ -1901,7 +1902,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <div className="font-mono text-lg font-bold text-[#FACC15] tabular-nums">
                       {formatPKR(d.amount)}
                     </div>
-                    <div className="text-xs text-slate-200 font-mono">
+                    <div className="text-xs text-slate-200 font-mono break-all">
                       TID: {d.transaction_ref} · Sender: {d.sender_account}
                     </div>
                   </div>

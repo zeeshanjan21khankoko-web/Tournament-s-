@@ -361,30 +361,30 @@ export const WalletView: React.FC<WalletViewProps> = ({
   return (
     <div className="space-y-5 sm:space-y-6">
       {/* 1. Hero Golden Gradient Available Balance Card (Matches Screenshot 3) */}
-      <section className="ff-gold-gradient-card border border-[#FACC15]/25 rounded-3xl p-5 sm:p-6 shadow-2xl">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-[10px] sm:text-xs font-bold uppercase tracking-[0.18em] text-[#FACC15]/80">
-              <span className="w-4 h-px bg-[#FACC15]/40 inline-block" />
-              <span>AVAILABLE BALANCE</span>
-              <span className="w-4 h-px bg-[#FACC15]/40 inline-block" />
+      <section className="ff-gold-gradient-card border border-[#FACC15]/25 rounded-3xl p-4 sm:p-6 shadow-2xl overflow-hidden">
+        <div className="flex items-start justify-between gap-3 sm:gap-4 min-w-0">
+          <div className="space-y-1 min-w-0 flex-1">
+            <div className="flex items-center gap-2 text-[10px] sm:text-xs font-bold uppercase tracking-[0.14em] sm:tracking-[0.18em] text-[#FACC15]/80">
+              <span className="w-3 sm:w-4 h-px bg-[#FACC15]/40 inline-block shrink-0" />
+              <span className="truncate">AVAILABLE BALANCE</span>
+              <span className="w-3 sm:w-4 h-px bg-[#FACC15]/40 inline-block shrink-0" />
             </div>
-            <div className="font-display text-3xl sm:text-4xl font-extrabold text-[#FACC15] tabular-nums tracking-tight">
+            <div className="font-display text-2xl sm:text-4xl font-extrabold text-[#FACC15] tabular-nums tracking-tight break-words">
               {formatRs(totalBalance)}
             </div>
-            <div className="text-xs text-slate-400">
+            <div className="text-xs text-slate-400 break-words">
               {pendingWithdrawal > 0
                 ? `Withdrawable: ${formatRs(spendableBalance)} · Pending: ${formatRs(pendingWithdrawal)}`
                 : 'Updated just now'}
             </div>
           </div>
 
-          <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-[#FACC15]/15 border border-[#FACC15]/25 flex items-center justify-center text-[#FACC15] shrink-0">
-            <Wallet className="w-7 h-7 sm:w-8 sm:h-8" />
+          <div className="w-11 h-11 sm:w-14 sm:h-14 rounded-2xl bg-[#FACC15]/15 border border-[#FACC15]/25 flex items-center justify-center text-[#FACC15] shrink-0">
+            <Wallet className="w-6 h-6 sm:w-8 sm:h-8" />
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 mt-5">
+        <div className="grid grid-cols-2 gap-2.5 sm:gap-3 mt-5">
           <button
             type="button"
             onClick={() => {
@@ -392,9 +392,9 @@ export const WalletView: React.FC<WalletViewProps> = ({
               setDepSuccess('');
               setActiveModal('deposit');
             }}
-            className="min-h-[46px] px-4 py-2.5 rounded-xl bg-[#FACC15] hover:bg-[#FDE047] text-[#0A0E17] font-display text-sm font-extrabold inline-flex items-center justify-center gap-2 shadow-[0_8px_22px_rgba(250,204,21,0.3)] transition-all active:scale-[0.98]"
+            className="min-h-[46px] px-3 sm:px-4 py-2.5 rounded-xl bg-[#FACC15] hover:bg-[#FDE047] text-[#0A0E17] font-display text-sm font-extrabold inline-flex items-center justify-center gap-2 shadow-[0_8px_22px_rgba(250,204,21,0.3)] transition-all active:scale-[0.98]"
           >
-            <span className="w-5 h-5 rounded-full bg-[#0A0E17] text-[#FACC15] flex items-center justify-center">
+            <span className="w-5 h-5 rounded-full bg-[#0A0E17] text-[#FACC15] flex items-center justify-center shrink-0">
               <ArrowDown className="w-3 h-3" />
             </span>
             <span>Deposit</span>
@@ -407,9 +407,9 @@ export const WalletView: React.FC<WalletViewProps> = ({
               setWdSuccess('');
               setActiveModal('withdraw');
             }}
-            className="min-h-[46px] px-4 py-2.5 rounded-xl bg-[#131A29]/90 hover:bg-[#192235] border border-white/[0.14] text-[#FACC15] font-display text-sm font-extrabold inline-flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
+            className="min-h-[46px] px-3 sm:px-4 py-2.5 rounded-xl bg-[#131A29]/90 hover:bg-[#192235] border border-white/[0.14] text-[#FACC15] font-display text-sm font-extrabold inline-flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
           >
-            <span className="w-5 h-5 rounded-full bg-[#FACC15] text-[#0A0E17] flex items-center justify-center">
+            <span className="w-5 h-5 rounded-full bg-[#FACC15] text-[#0A0E17] flex items-center justify-center shrink-0">
               <ArrowUp className="w-3 h-3" />
             </span>
             <span>Withdraw</span>
@@ -425,34 +425,34 @@ export const WalletView: React.FC<WalletViewProps> = ({
           }}
           className="mt-3 w-full min-h-[46px] px-4 py-2.5 rounded-xl bg-[#131A29]/80 hover:bg-[#192235] border border-white/[0.12] text-[#FACC15] font-display text-sm font-extrabold inline-flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
         >
-          <Send className="w-4 h-4" />
+          <Send className="w-4 h-4 shrink-0" />
           <span>Send to Friend</span>
         </button>
       </section>
 
       {/* 2. 3-Column Wallet Stats Row (DEPOSITS / WITHDRAWALS / APPROVED) (Matches Screenshot 3) */}
-      <section className="grid grid-cols-3 gap-3">
-        <div className="bg-[#131A29] border border-white/[0.08] rounded-2xl p-3.5 text-center">
-          <div className="font-display text-xl sm:text-2xl font-extrabold text-[#FACC15] tabular-nums">
+      <section className="grid grid-cols-3 gap-2 sm:gap-3">
+        <div className="min-w-0 bg-[#131A29] border border-white/[0.08] rounded-2xl p-2.5 sm:p-3.5 text-center">
+          <div className="font-display text-lg sm:text-2xl font-extrabold text-[#FACC15] tabular-nums">
             {deposits.length}
           </div>
-          <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 mt-0.5">
+          <div className="text-[9px] sm:text-xs font-bold uppercase tracking-normal sm:tracking-wider text-slate-400 mt-0.5 truncate">
             DEPOSITS
           </div>
         </div>
-        <div className="bg-[#131A29] border border-white/[0.08] rounded-2xl p-3.5 text-center">
-          <div className="font-display text-xl sm:text-2xl font-extrabold text-[#FACC15] tabular-nums">
+        <div className="min-w-0 bg-[#131A29] border border-white/[0.08] rounded-2xl p-2.5 sm:p-3.5 text-center">
+          <div className="font-display text-lg sm:text-2xl font-extrabold text-[#FACC15] tabular-nums">
             {withdrawals.length}
           </div>
-          <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 mt-0.5">
+          <div className="text-[9px] sm:text-xs font-bold uppercase tracking-normal sm:tracking-wider text-slate-400 mt-0.5 truncate">
             WITHDRAWALS
           </div>
         </div>
-        <div className="bg-[#131A29] border border-white/[0.08] rounded-2xl p-3.5 text-center">
-          <div className="font-display text-xl sm:text-2xl font-extrabold text-[#22C55E] tabular-nums">
+        <div className="min-w-0 bg-[#131A29] border border-white/[0.08] rounded-2xl p-2.5 sm:p-3.5 text-center">
+          <div className="font-display text-lg sm:text-2xl font-extrabold text-[#22C55E] tabular-nums">
             {approvedCount}
           </div>
-          <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 mt-0.5">
+          <div className="text-[9px] sm:text-xs font-bold uppercase tracking-normal sm:tracking-wider text-slate-400 mt-0.5 truncate">
             APPROVED
           </div>
         </div>
@@ -529,9 +529,9 @@ export const WalletView: React.FC<WalletViewProps> = ({
             {historyRows.map((row) => (
               <div
                 key={row.id}
-                className="bg-[#131A29] border border-white/[0.08] rounded-2xl p-3.5 sm:p-4 flex items-center justify-between gap-3"
+                className="min-w-0 overflow-hidden bg-[#131A29] border border-white/[0.08] rounded-2xl p-3 sm:p-4 flex items-center justify-between gap-2.5 sm:gap-3"
               >
-                <div className="flex items-center gap-3 min-w-0">
+                <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
                   <div
                     className={`w-11 h-11 rounded-xl border flex items-center justify-center shrink-0 ${
                       row.method === 'easypaisa'
@@ -598,7 +598,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full sm:max-w-xl max-h-[90vh] overflow-y-auto bg-[#131A29] border border-white/[0.12] rounded-t-3xl sm:rounded-2xl p-5 sm:p-6 space-y-5 shadow-2xl"
+            className="w-full sm:max-w-xl max-h-[90vh] overflow-y-auto overflow-x-hidden bg-[#131A29] border border-white/[0.12] rounded-t-3xl sm:rounded-2xl p-4 sm:p-6 space-y-5 shadow-2xl"
           >
             <div className="flex items-center justify-between">
               <div>
@@ -788,7 +788,7 @@ export const WalletView: React.FC<WalletViewProps> = ({
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full sm:max-w-xl max-h-[90vh] overflow-y-auto bg-[#131A29] border border-white/[0.12] rounded-t-3xl sm:rounded-2xl p-5 sm:p-6 space-y-5 shadow-2xl"
+            className="w-full sm:max-w-xl max-h-[90vh] overflow-y-auto overflow-x-hidden bg-[#131A29] border border-white/[0.12] rounded-t-3xl sm:rounded-2xl p-4 sm:p-6 space-y-5 shadow-2xl"
           >
             <div className="flex items-center justify-between">
               <div>

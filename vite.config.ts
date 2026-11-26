@@ -31,6 +31,17 @@ export default defineConfig(() => {
           orientation: 'portrait',
           start_url: '/',
           scope: '/',
+          prefer_related_applications: false,
+          related_applications: [
+            {
+              platform: 'webapp',
+              url: 'https://ais-dev-dv4wrgoavfscdr2trpjzks-20887831708.asia-northeast1.run.app/manifest.webmanifest',
+            },
+            {
+              platform: 'webapp',
+              url: 'https://ais-pre-dv4wrgoavfscdr2trpjzks-20887831708.asia-northeast1.run.app/manifest.webmanifest',
+            },
+          ],
           icons: [
             {
               src: '/pwa-192x192.png',

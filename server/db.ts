@@ -85,6 +85,7 @@ export function initDatabase(): void {
     CREATE TABLE IF NOT EXISTS deposits (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      firestore_key TEXT NOT NULL DEFAULT '',
       amount INTEGER NOT NULL CHECK(amount > 0),
       method TEXT NOT NULL CHECK(method IN ('jazzcash', 'easypaisa')),
       transaction_ref TEXT UNIQUE NOT NULL,
@@ -100,6 +101,7 @@ export function initDatabase(): void {
     CREATE TABLE IF NOT EXISTS withdrawals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      firestore_key TEXT NOT NULL DEFAULT '',
       amount INTEGER NOT NULL CHECK(amount > 0),
       method TEXT NOT NULL CHECK(method IN ('jazzcash', 'easypaisa', 'bank_account')),
       bank_name TEXT NOT NULL DEFAULT '',
@@ -116,13 +118,14 @@ export function initDatabase(): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tx_code TEXT UNIQUE NOT NULL,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      type TEXT NOT NULL CHECK(type IN ('deposit', 'withdrawal', 'entry_fee', 'prize_win', 'refund', 'admin_adjustment')),
+      type TEXT NOT NULL CHECK(type IN ('deposit', 'withdrawal', 'entry_fee', 'prize_win', 'refund', 'admin_adjustment', 'transfer_out', 'transfer_in', 'lucky_draw')),
       amount INTEGER NOT NULL CHECK(amount >= 0),
       direction TEXT NOT NULL CHECK(direction IN ('credit', 'debit')),
       balance_after INTEGER NOT NULL,
       status TEXT NOT NULL DEFAULT 'completed' CHECK(status IN ('pending', 'approved', 'paid', 'completed', 'rejected')),
       reference_id TEXT NOT NULL DEFAULT '',
       description TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -243,6 +246,98 @@ export function initDatabase(): void {
   if (!userColumns.some((col) => col.name === 'kills')) {
     db.exec('ALTER TABLE users ADD COLUMN kills INTEGER NOT NULL DEFAULT 0');
   }
+  if (!userColumns.some((col) => col.name === 'firebase_uid')) {
+    db.exec("ALTER TABLE users ADD COLUMN firebase_uid TEXT NOT NULL DEFAULT ''");
+  }
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_firebase_uid ON users(firebase_uid) WHERE firebase_uid != ''"
+  );
+
+  const withdrawalsSchema = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'withdrawals'")
+    .get() as { sql?: string } | undefined;
+  if (
+    withdrawalsSchema?.sql &&
+    (!withdrawalsSchema.sql.includes('bank_account') || !withdrawalsSchema.sql.includes("'paid'"))
+  ) {
+    const wdColsBefore = (
+      db.prepare('PRAGMA table_info(withdrawals)').all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    const hasBankName = wdColsBefore.includes('bank_name');
+    const hasFirestoreKey = wdColsBefore.includes('firestore_key');
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE withdrawals_migrated (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          firestore_key TEXT NOT NULL DEFAULT '',
+          amount INTEGER NOT NULL CHECK(amount > 0),
+          method TEXT NOT NULL CHECK(method IN ('jazzcash', 'easypaisa', 'bank_account')),
+          bank_name TEXT NOT NULL DEFAULT '',
+          account_title TEXT NOT NULL,
+          account_number TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'paid')),
+          admin_note TEXT NOT NULL DEFAULT '',
+          reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          reviewed_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO withdrawals_migrated (
+          id, user_id, firestore_key, amount, method, bank_name, account_title, account_number,
+          status, admin_note, reviewed_by, reviewed_at, created_at
+        )
+        SELECT id, user_id, ${hasFirestoreKey ? 'firestore_key' : "''"}, amount, method, ${hasBankName ? 'bank_name' : "''"}, account_title, account_number,
+               status, admin_note, reviewed_by, reviewed_at, created_at
+        FROM withdrawals;
+        DROP TABLE withdrawals;
+        ALTER TABLE withdrawals_migrated RENAME TO withdrawals;
+      `);
+    }).immediate();
+    db.pragma('foreign_keys = ON');
+  }
+
+  const transactionsSchema = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transactions'")
+    .get() as { sql?: string } | undefined;
+  if (
+    transactionsSchema?.sql &&
+    (!transactionsSchema.sql.includes("'paid'") ||
+      !transactionsSchema.sql.includes("'transfer_out'") ||
+      !transactionsSchema.sql.includes("'lucky_draw'"))
+  ) {
+    const txColsBefore = (
+      db.prepare('PRAGMA table_info(transactions)').all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    const hasIdemKey = txColsBefore.includes('idempotency_key');
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE transactions_migrated (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          tx_code TEXT UNIQUE NOT NULL,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          type TEXT NOT NULL CHECK(type IN ('deposit', 'withdrawal', 'entry_fee', 'prize_win', 'refund', 'admin_adjustment', 'transfer_out', 'transfer_in', 'lucky_draw')),
+          amount INTEGER NOT NULL CHECK(amount >= 0),
+          direction TEXT NOT NULL CHECK(direction IN ('credit', 'debit')),
+          balance_after INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'completed' CHECK(status IN ('pending', 'approved', 'paid', 'completed', 'rejected')),
+          reference_id TEXT NOT NULL DEFAULT '',
+          description TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO transactions_migrated (
+          id, tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description, idempotency_key, created_at
+        )
+        SELECT id, tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description, ${hasIdemKey ? 'idempotency_key' : "''"}, created_at
+        FROM transactions;
+        DROP TABLE transactions;
+        ALTER TABLE transactions_migrated RENAME TO transactions;
+      `);
+    }).immediate();
+    db.pragma('foreign_keys = ON');
+  }
 
   const tournamentColumns = db.prepare('PRAGMA table_info(tournaments)').all() as Array<{ name: string }>;
   if (!tournamentColumns.some((col) => col.name === 'end_time')) {
@@ -267,83 +362,29 @@ export function initDatabase(): void {
     db.exec('ALTER TABLE tournaments ADD COLUMN prize_5th INTEGER NOT NULL DEFAULT 0');
   }
 
-  const withdrawalsSchema = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'withdrawals'")
-    .get() as { sql?: string } | undefined;
-  if (
-    withdrawalsSchema?.sql &&
-    (!withdrawalsSchema.sql.includes('bank_account') || !withdrawalsSchema.sql.includes("'paid'"))
-  ) {
-    const hasBankName = (
-      db.prepare('PRAGMA table_info(withdrawals)').all() as Array<{ name: string }>
-    ).some((c) => c.name === 'bank_name');
-    db.pragma('foreign_keys = OFF');
-    db.transaction(() => {
-      db.exec(`
-        CREATE TABLE withdrawals_migrated (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          amount INTEGER NOT NULL CHECK(amount > 0),
-          method TEXT NOT NULL CHECK(method IN ('jazzcash', 'easypaisa', 'bank_account')),
-          bank_name TEXT NOT NULL DEFAULT '',
-          account_title TEXT NOT NULL,
-          account_number TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'paid')),
-          admin_note TEXT NOT NULL DEFAULT '',
-          reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-          reviewed_at TEXT,
-          created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        INSERT INTO withdrawals_migrated (
-          id, user_id, amount, method, bank_name, account_title, account_number,
-          status, admin_note, reviewed_by, reviewed_at, created_at
-        )
-        SELECT id, user_id, amount, method, ${hasBankName ? 'bank_name' : "''"}, account_title, account_number,
-               status, admin_note, reviewed_by, reviewed_at, created_at
-        FROM withdrawals;
-        DROP TABLE withdrawals;
-        ALTER TABLE withdrawals_migrated RENAME TO withdrawals;
-      `);
-    }).immediate();
-    db.pragma('foreign_keys = ON');
+  const depositColumns = db.prepare('PRAGMA table_info(deposits)').all() as Array<{ name: string }>;
+  if (!depositColumns.some((col) => col.name === 'firestore_key')) {
+    db.exec("ALTER TABLE deposits ADD COLUMN firestore_key TEXT NOT NULL DEFAULT ''");
   }
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_deposits_firestore_key ON deposits(firestore_key) WHERE firestore_key != ''"
+  );
 
-  const transactionsSchema = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transactions'")
-    .get() as { sql?: string } | undefined;
-  if (
-    transactionsSchema?.sql &&
-    (!transactionsSchema.sql.includes("'paid'") ||
-      !transactionsSchema.sql.includes("'transfer_out'") ||
-      !transactionsSchema.sql.includes("'lucky_draw'"))
-  ) {
-    db.pragma('foreign_keys = OFF');
-    db.transaction(() => {
-      db.exec(`
-        CREATE TABLE transactions_migrated (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          tx_code TEXT UNIQUE NOT NULL,
-          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-          type TEXT NOT NULL CHECK(type IN ('deposit', 'withdrawal', 'entry_fee', 'prize_win', 'refund', 'admin_adjustment', 'transfer_out', 'transfer_in', 'lucky_draw')),
-          amount INTEGER NOT NULL CHECK(amount >= 0),
-          direction TEXT NOT NULL CHECK(direction IN ('credit', 'debit')),
-          balance_after INTEGER NOT NULL,
-          status TEXT NOT NULL DEFAULT 'completed' CHECK(status IN ('pending', 'approved', 'paid', 'completed', 'rejected')),
-          reference_id TEXT NOT NULL DEFAULT '',
-          description TEXT NOT NULL,
-          created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        INSERT INTO transactions_migrated (
-          id, tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description, created_at
-        )
-        SELECT id, tx_code, user_id, type, amount, direction, balance_after, status, reference_id, description, created_at
-        FROM transactions;
-        DROP TABLE transactions;
-        ALTER TABLE transactions_migrated RENAME TO transactions;
-      `);
-    }).immediate();
-    db.pragma('foreign_keys = ON');
+  const withdrawalColumns = db.prepare('PRAGMA table_info(withdrawals)').all() as Array<{ name: string }>;
+  if (!withdrawalColumns.some((col) => col.name === 'firestore_key')) {
+    db.exec("ALTER TABLE withdrawals ADD COLUMN firestore_key TEXT NOT NULL DEFAULT ''");
   }
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_withdrawals_firestore_key ON withdrawals(firestore_key) WHERE firestore_key != ''"
+  );
+
+  const txColumns = db.prepare('PRAGMA table_info(transactions)').all() as Array<{ name: string }>;
+  if (!txColumns.some((col) => col.name === 'idempotency_key')) {
+    db.exec("ALTER TABLE transactions ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''");
+  }
+  db.exec(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_idempotency_key ON transactions(idempotency_key) WHERE idempotency_key != ''"
+  );
 
   // Clean up only expired sessions while keeping active persistent sessions intact
   db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now());
@@ -353,6 +394,35 @@ export function initDatabase(): void {
     INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance)
     SELECT id, wallet_balance FROM users;
   `);
+
+  // Reconcile any legacy balance mismatch safely without resetting valid balances
+  const mismatchedWallets = db
+    .prepare(
+      `SELECT u.id as user_id, u.wallet_balance, w.available_balance, w.total_deposited, w.total_won
+       FROM users u
+       JOIN wallet_accounts w ON w.user_id = u.id
+       WHERE u.wallet_balance != w.available_balance`
+    )
+    .all() as Array<{
+    user_id: number;
+    wallet_balance: number;
+    available_balance: number;
+    total_deposited: number;
+    total_won: number;
+  }>;
+  for (const row of mismatchedWallets) {
+    const authoritative =
+      row.available_balance === 0 &&
+      row.wallet_balance > 0 &&
+      row.total_deposited === 0 &&
+      row.total_won === 0
+        ? row.wallet_balance
+        : Math.max(0, row.available_balance);
+    db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(authoritative, row.user_id);
+    db.prepare(
+      "UPDATE wallet_accounts SET available_balance = ?, updated_at = datetime('now') WHERE user_id = ?"
+    ).run(authoritative, row.user_id);
+  }
 
   // Automatic tournament/announcement creation is permanently disabled.
   // Only the Admin can manually create, edit, or delete tournaments.
@@ -377,6 +447,57 @@ export function initDatabase(): void {
   ).run();
 
   recalculateAllUserPoints();
+}
+
+export interface WalletAccountRow {
+  user_id: number;
+  available_balance: number;
+  pending_withdrawal: number;
+  total_deposited: number;
+  total_withdrawn: number;
+  total_won: number;
+  updated_at: string;
+}
+
+export function ensureAndReconcileWallet(userId: number): WalletAccountRow | null {
+  const userRow = db
+    .prepare('SELECT id, wallet_balance FROM users WHERE id = ?')
+    .get(userId) as { id: number; wallet_balance: number } | undefined;
+  if (!userRow) return null;
+
+  db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
+    userId,
+    Math.max(0, Math.floor(Number(userRow.wallet_balance) || 0))
+  );
+
+  const wallet = db
+    .prepare('SELECT * FROM wallet_accounts WHERE user_id = ?')
+    .get(userId) as WalletAccountRow;
+
+  if (wallet && userRow.wallet_balance !== wallet.available_balance) {
+    const authoritative =
+      wallet.available_balance === 0 &&
+      userRow.wallet_balance > 0 &&
+      wallet.total_deposited === 0 &&
+      wallet.total_won === 0
+        ? userRow.wallet_balance
+        : Math.max(0, wallet.available_balance);
+    db.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').run(authoritative, userId);
+    if (authoritative !== wallet.available_balance) {
+      db.prepare(
+        "UPDATE wallet_accounts SET available_balance = ?, updated_at = datetime('now') WHERE user_id = ?"
+      ).run(authoritative, userId);
+      wallet.available_balance = authoritative;
+    }
+  }
+
+  return wallet;
+}
+
+export function generateFirestoreRecordKey(prefix: 'DEP' | 'WD'): string {
+  const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const randPart = crypto.randomBytes(6).toString('hex').toUpperCase();
+  return `${prefix}-${datePart}-${randPart}`;
 }
 
 export function recalculateAllUserPoints(): void {

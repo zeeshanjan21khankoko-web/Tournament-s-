@@ -442,6 +442,8 @@ export async function syncOwnUserToFirestore(user: UserProfile): Promise<void> {
     const existingPrivate = await getDoc(userRef);
     if (existingPrivate.exists()) {
       await updateDoc(userRef, {
+        firebase_uid: uid,
+        sqlite_id: Math.max(1, Math.floor(Number(user.id) || 1)),
         username: safeUsername,
         phone: safePhone,
         avatar_url: safeAvatar,
@@ -450,6 +452,7 @@ export async function syncOwnUserToFirestore(user: UserProfile): Promise<void> {
     } else {
       await setDoc(userRef, {
         uid,
+        firebase_uid: uid,
         sqlite_id: Math.max(1, Math.floor(Number(user.id) || 1)),
         email: safeEmail,
         username: safeUsername,
@@ -459,8 +462,13 @@ export async function syncOwnUserToFirestore(user: UserProfile): Promise<void> {
         role: adminSignedIn && user.role === 'admin' ? 'admin' : 'player',
         is_blocked: 0,
         wallet_balance: adminSignedIn ? Math.max(0, Math.floor(Number(user.wallet_balance) || 0)) : 0,
+        pending_withdrawal: 0,
+        total_deposited: 0,
+        total_withdrawn: 0,
+        total_won: 0,
         matches_played: adminSignedIn ? Math.max(0, Math.floor(Number(user.matches_played) || 0)) : 0,
         wins: adminSignedIn ? Math.max(0, Math.floor(Number(user.wins) || 0)) : 0,
+        kills: adminSignedIn ? Math.max(0, Math.floor(Number(user.kills) || 0)) : 0,
         points: adminSignedIn ? Math.max(0, Math.floor(Number(user.points) || 0)) : 0,
         created_at: serverTimestamp(),
         updated_at: serverTimestamp(),
@@ -518,7 +526,14 @@ export async function saveUserPolicyToFirestore(deletedUserIds: number[]): Promi
 }
 
 export async function syncAllUsersToFirestore(
-  users: UserProfile[],
+  users: Array<
+    UserProfile & {
+      pending_withdrawal?: number;
+      total_deposited?: number;
+      total_withdrawn?: number;
+      total_won?: number;
+    }
+  >,
   deletedUserIds: number[]
 ): Promise<number> {
   if (!isFirebaseAdminUser()) return 0;
@@ -530,7 +545,9 @@ export async function syncAllUsersToFirestore(
 
   for (const u of users) {
     if (!u || !Number.isInteger(u.id) || u.id <= 0 || deletedSet.has(u.id)) continue;
-    const docId = userSqlDocId(u.id);
+    const rawFbUid = typeof u.firebase_uid === 'string' ? u.firebase_uid.trim() : '';
+    const validFbUid = /^[a-zA-Z0-9_-]{1,128}$/.test(rawFbUid) ? rawFbUid : '';
+    const docId = validFbUid || userSqlDocId(u.id);
     const userPath = `${USERS_COLLECTION}/${docId}`;
     const publicPath = `${USERS_PUBLIC_COLLECTION}/${docId}`;
     const userRef = doc(db, USERS_COLLECTION, docId);
@@ -545,8 +562,13 @@ export async function syncAllUsersToFirestore(
     const safeRole: 'player' | 'admin' = u.role === 'admin' ? 'admin' : 'player';
     const safeBlocked = u.is_blocked === 1 ? 1 : 0;
     const safeBalance = Math.max(0, Math.floor(Number(u.wallet_balance) || 0));
+    const safePendingWd = Math.max(0, Math.floor(Number(u.pending_withdrawal) || 0));
+    const safeTotalDep = Math.max(0, Math.floor(Number(u.total_deposited) || 0));
+    const safeTotalWd = Math.max(0, Math.floor(Number(u.total_withdrawn) || 0));
+    const safeTotalWon = Math.max(0, Math.floor(Number(u.total_won) || 0));
     const safeMatches = Math.max(0, Math.floor(Number(u.matches_played) || 0));
     const safeWins = Math.max(0, Math.floor(Number(u.wins) || 0));
+    const safeKills = Math.max(0, Math.floor(Number(u.kills) || 0));
     const safePoints = Math.max(0, Math.floor(Number(u.points) || 0));
 
     try {
@@ -554,20 +576,27 @@ export async function syncAllUsersToFirestore(
       if (snap.exists()) {
         await updateDoc(userRef, {
           sqlite_id: u.id,
+          firebase_uid: validFbUid,
           username: safeUsername,
           phone: safePhone,
           avatar_url: safeAvatar,
           role: safeRole,
           is_blocked: safeBlocked,
           wallet_balance: safeBalance,
+          pending_withdrawal: safePendingWd,
+          total_deposited: safeTotalDep,
+          total_withdrawn: safeTotalWd,
+          total_won: safeTotalWon,
           matches_played: safeMatches,
           wins: safeWins,
+          kills: safeKills,
           points: safePoints,
           updated_at: serverTimestamp(),
         });
       } else {
         await setDoc(userRef, {
           uid: docId,
+          firebase_uid: validFbUid,
           sqlite_id: u.id,
           email: safeEmail,
           username: safeUsername,
@@ -577,8 +606,13 @@ export async function syncAllUsersToFirestore(
           role: safeRole,
           is_blocked: safeBlocked,
           wallet_balance: safeBalance,
+          pending_withdrawal: safePendingWd,
+          total_deposited: safeTotalDep,
+          total_withdrawn: safeTotalWd,
+          total_won: safeTotalWon,
           matches_played: safeMatches,
           wins: safeWins,
+          kills: safeKills,
           points: safePoints,
           created_at: serverTimestamp(),
           updated_at: serverTimestamp(),
@@ -616,6 +650,7 @@ export async function syncAllUsersToFirestore(
 
 export interface CloudUserRecord {
   sqlite_id?: number;
+  firebase_uid?: string;
   player_id: string;
   username: string;
   email: string;
@@ -624,8 +659,13 @@ export interface CloudUserRecord {
   role: 'player' | 'admin';
   is_blocked: number;
   wallet_balance: number;
+  pending_withdrawal?: number;
+  total_deposited?: number;
+  total_withdrawn?: number;
+  total_won?: number;
   matches_played: number;
   wins: number;
+  kills?: number;
   points: number;
 }
 
@@ -652,7 +692,7 @@ export async function fetchCloudUsersFromFirestore(): Promise<{
         : [];
     const deletedSet = new Set<number>(policyIds);
 
-    const cloudUsers: CloudUserRecord[] = [];
+    const byEmail = new Map<string, { record: CloudUserRecord; isSqlDoc: boolean }>();
     for (const d of usersSnap.docs) {
       const data = d.data() as Record<string, unknown>;
       const sqliteId = Number(data.sqlite_id);
@@ -660,8 +700,17 @@ export async function fetchCloudUsersFromFirestore(): Promise<{
       const email = String(data.email || '').trim().toLowerCase();
       const username = String(data.username || '').trim();
       if (!email || !username) continue;
-      cloudUsers.push({
+
+      const isSqlDoc = d.id.startsWith('sql_');
+      const rawUid =
+        typeof data.firebase_uid === 'string' && data.firebase_uid.trim()
+          ? data.firebase_uid.trim()
+          : !isSqlDoc
+            ? d.id
+            : undefined;
+      const candidate: CloudUserRecord = {
         sqlite_id: Number.isInteger(sqliteId) && sqliteId > 0 ? sqliteId : undefined,
+        firebase_uid: rawUid,
         player_id: String(data.player_id || ''),
         username,
         email,
@@ -670,11 +719,33 @@ export async function fetchCloudUsersFromFirestore(): Promise<{
         role: data.role === 'admin' ? 'admin' : 'player',
         is_blocked: data.is_blocked === 1 ? 1 : 0,
         wallet_balance: Math.max(0, Math.floor(Number(data.wallet_balance) || 0)),
+        pending_withdrawal: Math.max(0, Math.floor(Number(data.pending_withdrawal) || 0)),
+        total_deposited: Math.max(0, Math.floor(Number(data.total_deposited) || 0)),
+        total_withdrawn: Math.max(0, Math.floor(Number(data.total_withdrawn) || 0)),
+        total_won: Math.max(0, Math.floor(Number(data.total_won) || 0)),
         matches_played: Math.max(0, Math.floor(Number(data.matches_played) || 0)),
         wins: Math.max(0, Math.floor(Number(data.wins) || 0)),
+        kills: Math.max(0, Math.floor(Number(data.kills) || 0)),
         points: Math.max(0, Math.floor(Number(data.points) || 0)),
-      });
+      };
+
+      const existing = byEmail.get(email);
+      if (!existing) {
+        byEmail.set(email, { record: candidate, isSqlDoc });
+      } else if (!isSqlDoc && existing.isSqlDoc) {
+        // Canonical Firebase UID doc takes precedence over legacy sql_ doc
+        byEmail.set(email, { record: candidate, isSqlDoc: false });
+      } else if (isSqlDoc === existing.isSqlDoc) {
+        const pickCandidate =
+          (!existing.record.sqlite_id && candidate.sqlite_id) ||
+          candidate.wallet_balance > existing.record.wallet_balance;
+        if (pickCandidate) {
+          byEmail.set(email, { record: candidate, isSqlDoc });
+        }
+      }
     }
+
+    const cloudUsers: CloudUserRecord[] = Array.from(byEmail.values()).map((v) => v.record);
 
     return { cloudUsers, deletedUserIds: policyIds };
   } catch (err) {
@@ -682,19 +753,26 @@ export async function fetchCloudUsersFromFirestore(): Promise<{
   }
 }
 
-export async function deleteUserFromFirestore(userId: number): Promise<void> {
+export async function deleteUserFromFirestore(userId: number, firebaseUid?: string): Promise<void> {
   if (!isFirebaseAdminUser()) return;
   const cleanId = Math.floor(Number(userId));
   if (!Number.isInteger(cleanId) || cleanId <= 1) return;
 
-  const docId = userSqlDocId(cleanId);
-  const userRef = doc(db, USERS_COLLECTION, docId);
-  const publicRef = doc(db, USERS_PUBLIC_COLLECTION, docId);
-  try {
-    await deleteDoc(publicRef).catch(() => {});
-    await deleteDoc(userRef);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `${USERS_COLLECTION}/${docId}`);
+  const docIds = [userSqlDocId(cleanId)];
+  const trimmedUid = typeof firebaseUid === 'string' ? firebaseUid.trim() : '';
+  if (trimmedUid && /^[a-zA-Z0-9_-]{1,128}$/.test(trimmedUid)) {
+    docIds.push(trimmedUid);
+  }
+
+  for (const docId of docIds) {
+    const userRef = doc(db, USERS_COLLECTION, docId);
+    const publicRef = doc(db, USERS_PUBLIC_COLLECTION, docId);
+    try {
+      await deleteDoc(publicRef).catch(() => {});
+      await deleteDoc(userRef).catch(() => {});
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `${USERS_COLLECTION}/${docId}`);
+    }
   }
 }
 
