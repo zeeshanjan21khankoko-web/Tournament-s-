@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { AVATAR_PRESETS, apiRequest, readImageFileAsDataUrl } from '../lib/api';
+import { syncOwnUserToFirestore } from '../lib/firestoreSync';
 import { PWAInstallButton } from './PWAInstallBanner';
 import type { UserProfile } from '../types';
 
@@ -87,6 +88,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         body: { avatarUrl: dataUrl },
       });
       onUserUpdated(res.user);
+      syncOwnUserToFirestore(res.user).catch(() => {});
       setProfileMsg('Profile photo saved!');
     } catch (err) {
       setProfileErr(err instanceof Error ? err.message : 'Unable to upload photo.');
@@ -111,6 +113,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         },
       });
       onUserUpdated(res.user);
+      syncOwnUserToFirestore(res.user).catch(() => {});
       setProfileMsg('Profile updated successfully.');
     } catch (err) {
       setProfileErr(err instanceof Error ? err.message : 'Failed to update profile.');

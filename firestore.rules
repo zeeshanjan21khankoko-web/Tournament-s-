@@ -65,12 +65,24 @@ service cloud.firestore {
 
     function isValidUserPrivateProfile(data, userId) {
       return data.keys().hasAll(['uid', 'email', 'username', 'player_id', 'role', 'created_at', 'updated_at']) &&
-        data.keys().hasOnly(['uid', 'email', 'username', 'player_id', 'role', 'created_at', 'updated_at']) &&
+        data.keys().hasOnly([
+          'uid', 'sqlite_id', 'email', 'username', 'player_id', 'phone', 'avatar_url',
+          'role', 'is_blocked', 'wallet_balance', 'matches_played', 'wins', 'points',
+          'created_at', 'updated_at'
+        ]) &&
         data.uid is string && data.uid == userId && isValidId(data.uid) &&
+        (!('sqlite_id' in data) || (data.sqlite_id is int && data.sqlite_id >= 1)) &&
         data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
         data.username is string && data.username.size() >= 2 && data.username.size() <= 32 &&
         data.player_id is string && data.player_id.size() >= 3 && data.player_id.size() <= 32 &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 32)) &&
+        (!('avatar_url' in data) || (data.avatar_url is string && data.avatar_url.size() <= 512)) &&
         data.role in ['player', 'admin'] &&
+        (!('is_blocked' in data) || data.is_blocked in [0, 1]) &&
+        (!('wallet_balance' in data) || (data.wallet_balance is int && data.wallet_balance >= 0)) &&
+        (!('matches_played' in data) || (data.matches_played is int && data.matches_played >= 0)) &&
+        (!('wins' in data) || (data.wins is int && data.wins >= 0)) &&
+        (!('points' in data) || (data.points is int && data.points >= 0)) &&
         data.created_at is timestamp &&
         data.updated_at is timestamp;
     }
@@ -160,6 +172,24 @@ service cloud.firestore {
         data.updated_at is timestamp;
     }
 
+    function isValidAppUserPolicy(data) {
+      return data.keys().hasAll([
+          'auto_deletion_disabled', 'manual_admin_only_deletion', 'preserve_registrations',
+          'deleted_user_ids', 'updated_by_uid', 'updated_at'
+        ]) &&
+        data.keys().hasOnly([
+          'auto_deletion_disabled', 'manual_admin_only_deletion', 'preserve_registrations',
+          'deleted_user_ids', 'updated_by_uid', 'updated_at'
+        ]) &&
+        data.auto_deletion_disabled == true &&
+        data.manual_admin_only_deletion == true &&
+        data.preserve_registrations == true &&
+        data.deleted_user_ids is list && data.deleted_user_ids.size() <= 500 &&
+        (data.deleted_user_ids.size() == 0 || data.deleted_user_ids[0] is int) &&
+        data.updated_by_uid is string && isValidId(data.updated_by_uid) &&
+        data.updated_at is timestamp;
+    }
+
     // --- Collection Rules ---
 
     // Connection probe document for startup SDK verification
@@ -185,8 +215,11 @@ service cloud.firestore {
     match /users_public/{userId} {
       allow get: if isValidId(userId);
       allow list: if true;
-      allow create: if isVerifiedUser() && isValidId(userId) && isOwner(userId) &&
-        isValidUserPublicProfile(incoming(), userId) && incoming().updated_at == request.time;
+      allow create: if isVerifiedUser() && isValidId(userId) &&
+        isValidUserPublicProfile(incoming(), userId) && incoming().updated_at == request.time && (
+          (isOwner(userId) && incoming().points == 0) ||
+          isAdmin()
+        );
       allow update: if isVerifiedUser() && isValidId(userId) &&
         isValidUserPublicProfile(incoming(), userId) && (
           (isOwner(userId) &&
@@ -195,20 +228,30 @@ service cloud.firestore {
             incoming().points == existing().points &&
             incoming().updated_at == request.time &&
             incoming().diff(existing()).affectedKeys().hasOnly(['username', 'avatar_url', 'updated_at'])) ||
-          isAdmin()
+          (isAdmin() &&
+            incoming().uid == existing().uid &&
+            incoming().updated_at == request.time)
         );
-      allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin();
+      allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin() && userId != request.auth.uid;
     }
 
-    // Private PII-isolated user records
+    // Private PII-isolated user records (protected against automated or non-admin deletion)
     match /users/{userId} {
       allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.uid == request.auth.uid);
-      allow create: if isVerifiedUser() && isValidId(userId) && isOwner(userId) &&
+      allow create: if isVerifiedUser() && isValidId(userId) &&
         isValidUserPrivateProfile(incoming(), userId) &&
-        incoming().role == 'player' &&
         incoming().created_at == request.time &&
-        incoming().updated_at == request.time;
+        incoming().updated_at == request.time && (
+          (isOwner(userId) &&
+            incoming().role == 'player' &&
+            (!('is_blocked' in incoming()) || incoming().is_blocked == 0) &&
+            (!('wallet_balance' in incoming()) || incoming().wallet_balance == 0) &&
+            (!('matches_played' in incoming()) || incoming().matches_played == 0) &&
+            (!('wins' in incoming()) || incoming().wins == 0) &&
+            (!('points' in incoming()) || incoming().points == 0)) ||
+          (isAdmin() && (incoming().role == 'player' || isBootstrappedAdmin()))
+        );
       allow update: if isVerifiedUser() && isValidId(userId) &&
         isValidUserPrivateProfile(incoming(), userId) && (
           (isOwner(userId) &&
@@ -216,14 +259,19 @@ service cloud.firestore {
             incoming().role == existing().role &&
             incoming().created_at == existing().created_at &&
             incoming().updated_at == request.time &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['username', 'updated_at'])) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['username', 'phone', 'avatar_url', 'updated_at'])) ||
           (isAdmin() &&
             incoming().uid == existing().uid &&
             incoming().created_at == existing().created_at &&
             incoming().updated_at == request.time &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['username', 'role', 'updated_at']))
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'sqlite_id', 'username', 'phone', 'avatar_url', 'role', 'is_blocked',
+              'wallet_balance', 'matches_played', 'wins', 'points', 'updated_at'
+            ]) &&
+            (incoming().role == existing().role || isBootstrappedAdmin()))
         );
-      allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin();
+      allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin() &&
+        userId != request.auth.uid && existing().email != 'zeeshanjan21khankoko@gmail.com';
     }
 
     // Tournaments: Public read catalog (no PII/secrets); STRICTLY Admin-only create/update/delete
@@ -302,12 +350,14 @@ service cloud.firestore {
       allow delete: if isVerifiedUser() && isValidId(announcementId) && isAdmin();
     }
 
-    // Permanent tournament policy: readable as single doc, writable only by bootstrapped Admin with auto_creation_disabled == true
+    // Permanent policies: readable as single doc, writable only by bootstrapped Admin with strict lock flags
     match /app_settings/{settingId} {
       allow get: if isValidId(settingId);
       allow list: if false;
-      allow create, update: if isBootstrappedAdmin() && isValidId(settingId) &&
-        isValidAppTournamentPolicy(incoming()) &&
+      allow create, update: if isBootstrappedAdmin() && isValidId(settingId) && (
+        (settingId == 'user_policy' && isValidAppUserPolicy(incoming())) ||
+        (settingId != 'user_policy' && isValidAppTournamentPolicy(incoming()))
+      ) &&
         incoming().updated_by_uid == request.auth.uid &&
         incoming().updated_at == request.time;
       allow delete: if false;

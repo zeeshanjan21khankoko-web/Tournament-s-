@@ -6,8 +6,6 @@ import {
   getDoc,
   getDocs,
   onSnapshot,
-  orderBy,
-  query,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -22,9 +20,80 @@ import {
   googleProvider,
   handleFirestoreError,
 } from './firebase';
-import type { Tournament, TournamentWinner } from '../types';
+import { KELLY_TOURNAMENT_ARTWORK } from './api';
+import type { Tournament, TournamentWinner, UserProfile } from '../types';
 
 const TOURNAMENTS_COLLECTION = 'tournaments';
+const USERS_COLLECTION = 'users';
+const USERS_PUBLIC_COLLECTION = 'users_public';
+const DEFAULT_SAFE_AVATAR = '/src/assets/images/avatar_esports_pro_1795298801657.jpg';
+const VALID_MODES = new Set<Tournament['mode']>(['Battle Royale', 'Clash Squad', 'Lone Wolf']);
+const VALID_STATUSES = new Set<Tournament['status']>([
+  'upcoming',
+  'live',
+  'completed',
+  'cancelled',
+]);
+
+function parseNumericTournamentId(rawId: unknown, docId?: string): number {
+  const n = Math.floor(Number(rawId));
+  if (Number.isInteger(n) && n > 0) return n;
+  if (docId) {
+    const stripped = docId.replace(/^tour_/i, '');
+    const parsedDocId = Math.floor(Number(stripped));
+    if (Number.isInteger(parsedDocId) && parsedDocId > 0) return parsedDocId;
+  }
+  return 0;
+}
+
+function normalizeTournamentMode(rawMode: unknown): Tournament['mode'] {
+  if (typeof rawMode === 'string' && VALID_MODES.has(rawMode as Tournament['mode'])) {
+    return rawMode as Tournament['mode'];
+  }
+  return 'Battle Royale';
+}
+
+function normalizeTournamentStatus(rawStatus: unknown): Tournament['status'] {
+  if (typeof rawStatus === 'string' && VALID_STATUSES.has(rawStatus as Tournament['status'])) {
+    return rawStatus as Tournament['status'];
+  }
+  return 'upcoming';
+}
+
+function mapFirestoreDocToTournament(docId: string, d: Record<string, unknown>): Tournament | null {
+  const id = parseNumericTournamentId(d.id, docId);
+  const title = String(d.title || '').trim();
+  if (id <= 0 || !title) return null;
+  const rawBanner = String(d.banner_url || '').trim();
+  const maxSlots = Math.max(2, Math.min(500, Math.floor(Number(d.max_slots) || 48)));
+  const filledSlots = Math.max(0, Math.min(maxSlots, Math.floor(Number(d.filled_slots) || 0)));
+  return {
+    id,
+    title,
+    game_name: String(d.game_name || 'Free Fire').trim() || 'Free Fire',
+    mode: normalizeTournamentMode(d.mode),
+    entry_fee: Math.max(0, Math.floor(Number(d.entry_fee) || 0)),
+    prize_pool: Math.max(0, Math.floor(Number(d.prize_pool) || 0)),
+    prize_1st: Math.max(0, Math.floor(Number(d.prize_1st) || 0)),
+    prize_2nd: Math.max(0, Math.floor(Number(d.prize_2nd) || 0)),
+    prize_3rd: Math.max(0, Math.floor(Number(d.prize_3rd) || 0)),
+    prize_4th: Math.max(0, Math.floor(Number(d.prize_4th) || 0)),
+    prize_5th: Math.max(0, Math.floor(Number(d.prize_5th) || 0)),
+    max_slots: maxSlots,
+    filled_slots: filledSlots,
+    match_time: String(d.match_time || ''),
+    end_time: String(d.end_time || ''),
+    status: normalizeTournamentStatus(d.status),
+    banner_url: rawBanner || KELLY_TOURNAMENT_ARTWORK,
+    rules: String(d.rules || ''),
+    room_id: '',
+    room_pass: '',
+    created_at: toIsoString(d.created_at),
+    is_registered: false,
+    registered_players: [],
+    winners: Array.isArray(d.winners) ? (d.winners as TournamentWinner[]) : [],
+  };
+}
 
 export function isFirebaseAdminUser(): boolean {
   const u = auth.currentUser;
@@ -38,7 +107,7 @@ export async function signInFirebaseAdmin(): Promise<{ email: string; uid: strin
   if (!user.emailVerified || (user.email || '').toLowerCase() !== ADMIN_FIREBASE_EMAIL.toLowerCase()) {
     await signOut(auth).catch(() => {});
     throw new Error(
-      `Only the authorized Admin (${ADMIN_FIREBASE_EMAIL}) can manage Firebase tournament records.`
+      `Only the authorized Admin (${ADMIN_FIREBASE_EMAIL}) can manage Firebase records.`
     );
   }
   const adminRef = doc(db, 'admins', user.uid);
@@ -98,12 +167,24 @@ export async function syncTournamentToFirestore(tournament: Tournament): Promise
   const tourPath = `${TOURNAMENTS_COLLECTION}/${docId}`;
   const tourRef = doc(db, TOURNAMENTS_COLLECTION, docId);
 
-  const sanitizedBanner = String(tournament.banner_url || '').slice(0, 512);
+  const rawBanner = String(tournament.banner_url || '').trim();
+  const sanitizedBanner =
+    rawBanner && rawBanner.length <= 512 ? rawBanner : KELLY_TOURNAMENT_ARTWORK;
+  const rawTitle = String(tournament.title || '').trim();
+  const safeTitle = (rawTitle.length >= 3 ? rawTitle : `${rawTitle || 'Match'} Arena`).slice(0, 120);
+  const rawGame = String(tournament.game_name || 'Free Fire').trim();
+  const safeGame = (rawGame.length >= 2 ? rawGame : 'Free Fire').slice(0, 64);
+  const rawMatchTime = String(tournament.match_time || '').trim();
+  const safeMatchTime = (rawMatchTime.length >= 10 ? rawMatchTime : new Date().toISOString()).slice(
+    0,
+    64
+  );
+
   const safeFields = {
     id: Math.floor(Number(tournament.id)),
-    title: String(tournament.title || '').trim().slice(0, 120),
-    game_name: String(tournament.game_name || 'Free Fire').trim().slice(0, 64),
-    mode: tournament.mode || 'Battle Royale',
+    title: safeTitle,
+    game_name: safeGame,
+    mode: normalizeTournamentMode(tournament.mode),
     entry_fee: Math.max(0, Math.floor(Number(tournament.entry_fee) || 0)),
     prize_pool: Math.max(0, Math.floor(Number(tournament.prize_pool) || 0)),
     prize_1st: Math.max(0, Math.floor(Number(tournament.prize_1st) || 0)),
@@ -113,9 +194,9 @@ export async function syncTournamentToFirestore(tournament: Tournament): Promise
     prize_5th: Math.max(0, Math.floor(Number(tournament.prize_5th) || 0)),
     max_slots: Math.max(2, Math.min(500, Math.floor(Number(tournament.max_slots) || 48))),
     filled_slots: Math.max(0, Math.floor(Number(tournament.filled_slots) || 0)),
-    match_time: String(tournament.match_time || ''),
-    end_time: String(tournament.end_time || ''),
-    status: tournament.status || 'upcoming',
+    match_time: safeMatchTime,
+    end_time: String(tournament.end_time || '').slice(0, 64),
+    status: normalizeTournamentStatus(tournament.status),
     banner_url: sanitizedBanner,
     rules: String(tournament.rules || '').slice(0, 4000),
     winners: sanitizeWinners(tournament.winners),
@@ -190,44 +271,60 @@ export async function getFirestoreTournamentCount(): Promise<number> {
   }
 }
 
+export async function fetchTournamentByIdFromFirestore(
+  tournamentId: number
+): Promise<Tournament | null> {
+  const cleanId = Math.floor(Number(tournamentId));
+  if (!Number.isInteger(cleanId) || cleanId <= 0) return null;
+
+  for (const candidateDocId of [tournamentDocId(cleanId), String(cleanId)]) {
+    try {
+      const snap = await getDoc(doc(db, TOURNAMENTS_COLLECTION, candidateDocId));
+      if (snap.exists()) {
+        const mapped = mapFirestoreDocToTournament(
+          snap.id,
+          snap.data() as Record<string, unknown>
+        );
+        if (mapped) return mapped;
+      }
+    } catch {
+      // Try next candidate doc ID
+    }
+  }
+
+  try {
+    const snap = await getDocs(collection(db, TOURNAMENTS_COLLECTION));
+    for (const docSnap of snap.docs) {
+      const mapped = mapFirestoreDocToTournament(
+        docSnap.id,
+        docSnap.data() as Record<string, unknown>
+      );
+      if (mapped && mapped.id === cleanId) {
+        return mapped;
+      }
+    }
+  } catch {
+    // Firestore unavailable
+  }
+
+  return null;
+}
+
 export function subscribeTournamentsFromFirestore(
   onData: (tournaments: Tournament[]) => void,
   onError?: (err: Error) => void
 ): Unsubscribe {
-  const q = query(collection(db, TOURNAMENTS_COLLECTION), orderBy('id', 'desc'));
+  const colRef = collection(db, TOURNAMENTS_COLLECTION);
   return onSnapshot(
-    q,
+    colRef,
     (snapshot) => {
-      const list: Tournament[] = snapshot.docs.map((docSnap) => {
-        const d = docSnap.data();
-        return {
-          id: Number(d.id || 0),
-          title: String(d.title || ''),
-          game_name: String(d.game_name || 'Free Fire'),
-          mode: (d.mode as Tournament['mode']) || 'Battle Royale',
-          entry_fee: Number(d.entry_fee || 0),
-          prize_pool: Number(d.prize_pool || 0),
-          prize_1st: Number(d.prize_1st || 0),
-          prize_2nd: Number(d.prize_2nd || 0),
-          prize_3rd: Number(d.prize_3rd || 0),
-          prize_4th: Number(d.prize_4th || 0),
-          prize_5th: Number(d.prize_5th || 0),
-          max_slots: Number(d.max_slots || 48),
-          filled_slots: Number(d.filled_slots || 0),
-          match_time: String(d.match_time || ''),
-          end_time: String(d.end_time || ''),
-          status: (d.status as Tournament['status']) || 'upcoming',
-          banner_url: String(d.banner_url || ''),
-          rules: String(d.rules || ''),
-          room_id: '',
-          room_pass: '',
-          created_at: toIsoString(d.created_at),
-          is_registered: false,
-          registered_players: [],
-          winners: Array.isArray(d.winners) ? (d.winners as TournamentWinner[]) : [],
-        };
-      });
-      onData(list.filter((t) => t.id > 0 && t.title.length > 0));
+      const list = snapshot.docs
+        .map((docSnap) =>
+          mapFirestoreDocToTournament(docSnap.id, docSnap.data() as Record<string, unknown>)
+        )
+        .filter((t): t is Tournament => t !== null)
+        .sort((a, b) => b.id - a.id);
+      onData(list);
     },
     (error) => {
       try {
@@ -300,3 +397,304 @@ export function subscribeTournamentPolicyFromFirestore(
     }
   );
 }
+
+// --- PERMANENT USER REGISTRATION PRESERVATION & FIREBASE SYNC ---
+
+function sanitizeSafeAvatarUrl(raw: unknown): string {
+  const val = typeof raw === 'string' ? raw.trim() : '';
+  if (!val || val.length > 512) return DEFAULT_SAFE_AVATAR;
+  return val;
+}
+
+function sanitizeSafeUsername(raw: unknown, fallback = 'Player'): string {
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
+  const safe = trimmed.slice(0, 32);
+  return safe.length >= 2 ? safe : fallback;
+}
+
+function sanitizeSafePlayerId(raw: unknown, idFallback: number): string {
+  const trimmed = typeof raw === 'string' ? raw.trim().slice(0, 32) : '';
+  return trimmed.length >= 3 ? trimmed : `PT-${Math.max(1, idFallback)}`;
+}
+
+export function userSqlDocId(userId: number): string {
+  return `sql_${Math.floor(Number(userId))}`;
+}
+
+export async function syncOwnUserToFirestore(user: UserProfile): Promise<void> {
+  const fbUser = auth.currentUser;
+  if (!fbUser || !fbUser.emailVerified) return;
+
+  const uid = fbUser.uid;
+  const userPath = `${USERS_COLLECTION}/${uid}`;
+  const publicPath = `${USERS_PUBLIC_COLLECTION}/${uid}`;
+  const userRef = doc(db, USERS_COLLECTION, uid);
+  const publicRef = doc(db, USERS_PUBLIC_COLLECTION, uid);
+
+  const safeUsername = sanitizeSafeUsername(user.username);
+  const safePlayerId = sanitizeSafePlayerId(user.player_id, user.id);
+  const safePhone = String(user.phone || '').trim().slice(0, 32);
+  const safeAvatar = sanitizeSafeAvatarUrl(user.avatar_url);
+  const safeEmail = String(user.email || fbUser.email || '').trim().toLowerCase().slice(0, 160);
+  const adminSignedIn = isFirebaseAdminUser();
+
+  try {
+    const existingPrivate = await getDoc(userRef);
+    if (existingPrivate.exists()) {
+      await updateDoc(userRef, {
+        username: safeUsername,
+        phone: safePhone,
+        avatar_url: safeAvatar,
+        updated_at: serverTimestamp(),
+      });
+    } else {
+      await setDoc(userRef, {
+        uid,
+        sqlite_id: Math.max(1, Math.floor(Number(user.id) || 1)),
+        email: safeEmail,
+        username: safeUsername,
+        player_id: safePlayerId,
+        phone: safePhone,
+        avatar_url: safeAvatar,
+        role: adminSignedIn && user.role === 'admin' ? 'admin' : 'player',
+        is_blocked: 0,
+        wallet_balance: adminSignedIn ? Math.max(0, Math.floor(Number(user.wallet_balance) || 0)) : 0,
+        matches_played: adminSignedIn ? Math.max(0, Math.floor(Number(user.matches_played) || 0)) : 0,
+        wins: adminSignedIn ? Math.max(0, Math.floor(Number(user.wins) || 0)) : 0,
+        points: adminSignedIn ? Math.max(0, Math.floor(Number(user.points) || 0)) : 0,
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp(),
+      });
+    }
+
+    const existingPublic = await getDoc(publicRef);
+    if (existingPublic.exists()) {
+      await updateDoc(publicRef, {
+        username: safeUsername,
+        avatar_url: safeAvatar,
+        updated_at: serverTimestamp(),
+      });
+    } else {
+      await setDoc(publicRef, {
+        uid,
+        player_id: safePlayerId,
+        username: safeUsername,
+        avatar_url: safeAvatar,
+        points: adminSignedIn ? Math.max(0, Math.floor(Number(user.points) || 0)) : 0,
+        updated_at: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, userPath);
+  }
+}
+
+export async function saveUserPolicyToFirestore(deletedUserIds: number[]): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !isFirebaseAdminUser()) return;
+  const cleanIds = Array.from(
+    new Set(
+      deletedUserIds
+        .map((n) => Math.floor(Number(n)))
+        .filter((n) => Number.isInteger(n) && n > 0)
+    )
+  )
+    .sort((a, b) => b - a)
+    .slice(0, 500);
+
+  const policyPath = 'app_settings/user_policy';
+  try {
+    await setDoc(doc(db, 'app_settings', 'user_policy'), {
+      auto_deletion_disabled: true,
+      manual_admin_only_deletion: true,
+      preserve_registrations: true,
+      deleted_user_ids: cleanIds,
+      updated_by_uid: user.uid,
+      updated_at: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, policyPath);
+  }
+}
+
+export async function syncAllUsersToFirestore(
+  users: UserProfile[],
+  deletedUserIds: number[]
+): Promise<number> {
+  if (!isFirebaseAdminUser()) return 0;
+
+  const deletedSet = new Set(
+    deletedUserIds.map((n) => Math.floor(Number(n))).filter((n) => n > 0)
+  );
+  let synced = 0;
+
+  for (const u of users) {
+    if (!u || !Number.isInteger(u.id) || u.id <= 0 || deletedSet.has(u.id)) continue;
+    const docId = userSqlDocId(u.id);
+    const userPath = `${USERS_COLLECTION}/${docId}`;
+    const publicPath = `${USERS_PUBLIC_COLLECTION}/${docId}`;
+    const userRef = doc(db, USERS_COLLECTION, docId);
+    const publicRef = doc(db, USERS_PUBLIC_COLLECTION, docId);
+
+    const safeUsername = sanitizeSafeUsername(u.username);
+    const safePlayerId = sanitizeSafePlayerId(u.player_id, u.id);
+    const safeEmail = String(u.email || '').trim().toLowerCase().slice(0, 160);
+    if (safeEmail.length < 3) continue;
+    const safePhone = String(u.phone || '').trim().slice(0, 32);
+    const safeAvatar = sanitizeSafeAvatarUrl(u.avatar_url);
+    const safeRole: 'player' | 'admin' = u.role === 'admin' ? 'admin' : 'player';
+    const safeBlocked = u.is_blocked === 1 ? 1 : 0;
+    const safeBalance = Math.max(0, Math.floor(Number(u.wallet_balance) || 0));
+    const safeMatches = Math.max(0, Math.floor(Number(u.matches_played) || 0));
+    const safeWins = Math.max(0, Math.floor(Number(u.wins) || 0));
+    const safePoints = Math.max(0, Math.floor(Number(u.points) || 0));
+
+    try {
+      const snap = await getDoc(userRef);
+      if (snap.exists()) {
+        await updateDoc(userRef, {
+          sqlite_id: u.id,
+          username: safeUsername,
+          phone: safePhone,
+          avatar_url: safeAvatar,
+          role: safeRole,
+          is_blocked: safeBlocked,
+          wallet_balance: safeBalance,
+          matches_played: safeMatches,
+          wins: safeWins,
+          points: safePoints,
+          updated_at: serverTimestamp(),
+        });
+      } else {
+        await setDoc(userRef, {
+          uid: docId,
+          sqlite_id: u.id,
+          email: safeEmail,
+          username: safeUsername,
+          player_id: safePlayerId,
+          phone: safePhone,
+          avatar_url: safeAvatar,
+          role: safeRole,
+          is_blocked: safeBlocked,
+          wallet_balance: safeBalance,
+          matches_played: safeMatches,
+          wins: safeWins,
+          points: safePoints,
+          created_at: serverTimestamp(),
+          updated_at: serverTimestamp(),
+        });
+      }
+
+      const pubSnap = await getDoc(publicRef);
+      if (pubSnap.exists()) {
+        await updateDoc(publicRef, {
+          player_id: safePlayerId,
+          username: safeUsername,
+          avatar_url: safeAvatar,
+          points: safePoints,
+          updated_at: serverTimestamp(),
+        });
+      } else {
+        await setDoc(publicRef, {
+          uid: docId,
+          player_id: safePlayerId,
+          username: safeUsername,
+          avatar_url: safeAvatar,
+          points: safePoints,
+          updated_at: serverTimestamp(),
+        });
+      }
+      synced += 1;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `${userPath} / ${publicPath}`);
+    }
+  }
+
+  await saveUserPolicyToFirestore(deletedUserIds);
+  return synced;
+}
+
+export interface CloudUserRecord {
+  sqlite_id?: number;
+  player_id: string;
+  username: string;
+  email: string;
+  phone: string;
+  avatar_url: string;
+  role: 'player' | 'admin';
+  is_blocked: number;
+  wallet_balance: number;
+  matches_played: number;
+  wins: number;
+  points: number;
+}
+
+export async function fetchCloudUsersFromFirestore(): Promise<{
+  cloudUsers: CloudUserRecord[];
+  deletedUserIds: number[];
+}> {
+  if (!isFirebaseAdminUser()) {
+    return { cloudUsers: [], deletedUserIds: [] };
+  }
+
+  try {
+    const [usersSnap, policySnap] = await Promise.all([
+      getDocs(collection(db, USERS_COLLECTION)),
+      getDoc(doc(db, 'app_settings', 'user_policy')).catch(() => null),
+    ]);
+
+    const policyIds: number[] =
+      policySnap && policySnap.exists() && Array.isArray(policySnap.data()?.deleted_user_ids)
+        ? policySnap
+            .data()!
+            .deleted_user_ids.map((n: unknown) => Math.floor(Number(n)))
+            .filter((n: number) => Number.isInteger(n) && n > 0)
+        : [];
+    const deletedSet = new Set<number>(policyIds);
+
+    const cloudUsers: CloudUserRecord[] = [];
+    for (const d of usersSnap.docs) {
+      const data = d.data() as Record<string, unknown>;
+      const sqliteId = Number(data.sqlite_id);
+      if (Number.isInteger(sqliteId) && deletedSet.has(sqliteId)) continue;
+      const email = String(data.email || '').trim().toLowerCase();
+      const username = String(data.username || '').trim();
+      if (!email || !username) continue;
+      cloudUsers.push({
+        sqlite_id: Number.isInteger(sqliteId) && sqliteId > 0 ? sqliteId : undefined,
+        player_id: String(data.player_id || ''),
+        username,
+        email,
+        phone: String(data.phone || ''),
+        avatar_url: sanitizeSafeAvatarUrl(data.avatar_url),
+        role: data.role === 'admin' ? 'admin' : 'player',
+        is_blocked: data.is_blocked === 1 ? 1 : 0,
+        wallet_balance: Math.max(0, Math.floor(Number(data.wallet_balance) || 0)),
+        matches_played: Math.max(0, Math.floor(Number(data.matches_played) || 0)),
+        wins: Math.max(0, Math.floor(Number(data.wins) || 0)),
+        points: Math.max(0, Math.floor(Number(data.points) || 0)),
+      });
+    }
+
+    return { cloudUsers, deletedUserIds: policyIds };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, USERS_COLLECTION);
+  }
+}
+
+export async function deleteUserFromFirestore(userId: number): Promise<void> {
+  if (!isFirebaseAdminUser()) return;
+  const cleanId = Math.floor(Number(userId));
+  if (!Number.isInteger(cleanId) || cleanId <= 1) return;
+
+  const docId = userSqlDocId(cleanId);
+  const userRef = doc(db, USERS_COLLECTION, docId);
+  const publicRef = doc(db, USERS_PUBLIC_COLLECTION, docId);
+  try {
+    await deleteDoc(publicRef).catch(() => {});
+    await deleteDoc(userRef);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `${USERS_COLLECTION}/${docId}`);
+  }
+}
+

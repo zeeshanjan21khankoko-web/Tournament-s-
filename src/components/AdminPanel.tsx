@@ -29,14 +29,19 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { ADMIN_FIREBASE_EMAIL, auth } from '../lib/firebase';
 import {
   deleteTournamentFromFirestore,
+  deleteUserFromFirestore,
+  fetchCloudUsersFromFirestore,
   getFirestoreTournamentCount,
   isFirebaseAdminUser,
   saveTournamentPolicyToFirestore,
+  saveUserPolicyToFirestore,
   signInFirebaseAdmin,
   signOutFirebaseAdmin,
+  syncAllUsersToFirestore,
   syncTournamentToFirestore,
 } from '../lib/firestoreSync';
 import {
+  KELLY_TOURNAMENT_ARTWORK,
   TOURNAMENT_MODES,
   addHoursToPktParts,
   apiRequest,
@@ -117,8 +122,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   );
   const [firebaseTourCount, setFirebaseTourCount] = useState<number>(0);
   const [deletedTournamentIds, setDeletedTournamentIds] = useState<number[]>([]);
+  const [deletedUserIds, setDeletedUserIds] = useState<number[]>([]);
   const [syncingCloud, setSyncingCloud] = useState(false);
+  const [syncingUsers, setSyncingUsers] = useState(false);
   const [connectingFirebase, setConnectingFirebase] = useState(false);
+
+  // Manual user deletion confirmation modal
+  const [deleteUserTarget, setDeleteUserTarget] = useState<AdminUserRow | null>(null);
+  const [deleteUserConfirmChecked, setDeleteUserConfirmChecked] = useState(false);
+  const [deleteUserConfirmInput, setDeleteUserConfirmInput] = useState('');
+  const [deleteUserReason, setDeleteUserReason] = useState('');
+  const [deletingUser, setDeletingUser] = useState(false);
 
   // YouTube Video composer / editor
   const [editingVideoId, setEditingVideoId] = useState<number | null>(null);
@@ -202,7 +216,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setLoading(true);
     setError('');
     try {
-      const [ov, us, deps, wds, txs, regs, anns, cts, vids, pol] = await Promise.all([
+      const [ov, us, deps, wds, txs, regs, anns, cts, vids, pol, userPol] = await Promise.all([
         apiRequest<{ overview: AdminOverview }>('/api/admin/overview', { token }),
         apiRequest<{ users: AdminUserRow[] }>('/api/admin/users', { token }),
         apiRequest<{ deposits: DepositRecord[] }>('/api/admin/deposits', { token }),
@@ -217,6 +231,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         apiRequest<{ deletedTournamentIds?: number[] }>('/api/admin/tournament-policy', {
           token,
         }).catch(() => ({ deletedTournamentIds: [] })),
+        apiRequest<{ deletedUserIds?: number[] }>('/api/admin/user-policy', {
+          token,
+        }).catch(() => ({ deletedUserIds: [] })),
       ]);
       setOverview(ov.overview);
       setUsers(us.users);
@@ -228,6 +245,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setContacts(cts.contacts || []);
       setVideos(vids.videos || []);
       setDeletedTournamentIds(pol.deletedTournamentIds || []);
+      setDeletedUserIds(userPol.deletedUserIds || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load admin data.');
     } finally {
@@ -587,10 +605,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         setNotice('Tournament schedule and Top 5 prizes updated.');
       }
       if (savedTournament && isFirebaseAdminUser()) {
-        await syncTournamentToFirestore(savedTournament);
-        await saveTournamentPolicyToFirestore(deletedTournamentIds).catch(() => {});
-        const count = await getFirestoreTournamentCount();
-        setFirebaseTourCount(count);
+        try {
+          await syncTournamentToFirestore(savedTournament);
+          await saveTournamentPolicyToFirestore(deletedTournamentIds).catch(() => {});
+          const count = await getFirestoreTournamentCount();
+          setFirebaseTourCount(count);
+        } catch (cloudErr) {
+          console.warn('Firestore backup notice:', cloudErr);
+          setNotice(
+            'Tournament saved in database. Use "Sync Existing to Firebase" to refresh cloud backup.'
+          );
+        }
       }
       setTourModal(null);
       await Promise.all([onRefreshPublic(), loadAdminData()]);
@@ -614,10 +639,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         : Array.from(new Set([...deletedTournamentIds, id]));
       setDeletedTournamentIds(nextDeleted);
       if (isFirebaseAdminUser()) {
-        await deleteTournamentFromFirestore(id);
-        await saveTournamentPolicyToFirestore(nextDeleted).catch(() => {});
-        const count = await getFirestoreTournamentCount();
-        setFirebaseTourCount(count);
+        try {
+          await deleteTournamentFromFirestore(id);
+          await saveTournamentPolicyToFirestore(nextDeleted).catch(() => {});
+          const count = await getFirestoreTournamentCount();
+          setFirebaseTourCount(count);
+        } catch (cloudErr) {
+          console.warn('Firestore delete sync notice:', cloudErr);
+        }
       }
       setNotice('Tournament permanently removed and any active entry fees refunded.');
       await Promise.all([onRefreshPublic(), loadAdminData()]);
@@ -873,14 +902,115 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  const handleDeleteUser = async (u: AdminUserRow) => {
+  const openDeleteUserConfirm = (u: AdminUserRow) => {
     setError('');
+    setNotice('');
+    setDeleteUserTarget(u);
+    setDeleteUserConfirmChecked(false);
+    setDeleteUserConfirmInput('');
+    setDeleteUserReason('');
+  };
+
+  const handleConfirmDeleteUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deleteUserTarget || deletingUser) return;
+    setError('');
+    setNotice('');
+    if (!deleteUserConfirmChecked) {
+      setError('Please check the confirmation box before deleting this account.');
+      return;
+    }
+    if (deleteUserConfirmInput.trim() !== deleteUserTarget.username) {
+      setError(`Type "${deleteUserTarget.username}" exactly to confirm account deletion.`);
+      return;
+    }
+
+    setDeletingUser(true);
     try {
-      await apiRequest(`/api/admin/users/${u.id}`, { method: 'DELETE', token });
-      setNotice(`Removed user ${u.username}.`);
+      const res = await apiRequest<{ ok: boolean; deletedUserIds?: number[] }>(
+        `/api/admin/users/${deleteUserTarget.id}`,
+        {
+          method: 'DELETE',
+          token,
+          headers: {
+            'X-Manual-Admin-Action': 'delete-user-confirm',
+          },
+          body: {
+            confirmManualDelete: true,
+            confirmUsername: deleteUserConfirmInput.trim(),
+            reason: deleteUserReason.trim() || 'Manual admin removal',
+          },
+        }
+      );
+
+      const nextDeletedIds = res.deletedUserIds || [...deletedUserIds, deleteUserTarget.id];
+      setDeletedUserIds(nextDeletedIds);
+      if (isFirebaseAdminUser()) {
+        await deleteUserFromFirestore(deleteUserTarget.id).catch(() => {});
+        await saveUserPolicyToFirestore(nextDeletedIds).catch(() => {});
+      }
+
+      const removedName = deleteUserTarget.username;
+      setDeleteUserTarget(null);
+      setDeleteUserConfirmChecked(false);
+      setDeleteUserConfirmInput('');
+      setDeleteUserReason('');
+      setNotice(`Manually removed user ${removedName} with admin confirmation.`);
       await loadAdminData();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete user.');
+    } finally {
+      setDeletingUser(false);
+    }
+  };
+
+  const handleSyncUsersWithFirebase = async () => {
+    if (syncingUsers) return;
+    setError('');
+    setNotice('');
+    if (!isFirebaseAdminUser()) {
+      setError(`Connect Firebase Admin (${ADMIN_FIREBASE_EMAIL}) first to sync and preserve user accounts.`);
+      return;
+    }
+    setSyncingUsers(true);
+    try {
+      const cloudData = await fetchCloudUsersFromFirestore();
+      let restoredCount = 0;
+      if (cloudData.cloudUsers.length > 0) {
+        const restoreRes = await apiRequest<{ restoredCount: number }>(
+          '/api/admin/users/restore-from-cloud',
+          {
+            method: 'POST',
+            token,
+            body: { cloudUsers: cloudData.cloudUsers },
+          }
+        );
+        restoredCount = restoreRes.restoredCount || 0;
+      }
+
+      const [latestUsersRes, latestPolRes] = await Promise.all([
+        apiRequest<{ users: AdminUserRow[] }>('/api/admin/users', { token }),
+        apiRequest<{ deletedUserIds?: number[] }>('/api/admin/user-policy', { token }).catch(
+          () => ({ deletedUserIds })
+        ),
+      ]);
+
+      const mergedDeleted = Array.from(
+        new Set([...(latestPolRes.deletedUserIds || []), ...cloudData.deletedUserIds])
+      );
+      setUsers(latestUsersRes.users);
+      setDeletedUserIds(mergedDeleted);
+
+      const syncedCount = await syncAllUsersToFirestore(latestUsersRes.users, mergedDeleted);
+      setNotice(
+        `Synced ${syncedCount} user account(s) to Firebase${
+          restoredCount > 0 ? ` and restored ${restoredCount} missing account(s)` : ''
+        }. Auto-deletion stays permanently disabled.`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sync users with Firebase.');
+    } finally {
+      setSyncingUsers(false);
     }
   };
 
@@ -1414,9 +1544,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               >
                 <div className="flex items-center gap-4 min-w-0">
                   <img
-                    src={t.banner_url}
+                    src={t.banner_url || KELLY_TOURNAMENT_ARTWORK}
                     alt={t.title}
                     referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      if (!e.currentTarget.src.endsWith(KELLY_TOURNAMENT_ARTWORK)) {
+                        e.currentTarget.src = KELLY_TOURNAMENT_ARTWORK;
+                      }
+                    }}
                     className="w-20 h-14 rounded-xl object-cover shrink-0 bg-[#0D1320]"
                   />
                   <div className="min-w-0">
@@ -1951,18 +2086,56 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       {/* USERS & ACCOUNT SECURITY */}
       {tab === 'users' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="font-display text-lg font-bold text-white">
-              Registered Accounts ({users.length})
-            </h2>
-            <button
-              type="button"
-              onClick={() => setNewUserModal(true)}
-              className="ff-btn-ember min-h-[44px] px-4 py-2 rounded-xl text-sm font-bold inline-flex items-center gap-2"
-            >
-              <UserPlus className="w-4 h-4" />
-              <span>Add User</span>
-            </button>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-display text-lg font-bold text-white">
+                Registered Accounts ({users.length})
+              </h2>
+              <p className="text-xs text-slate-400">
+                Automatic account deletion is permanently disabled. Only Admin can remove an account after explicit confirmation.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {firebaseAdminEmail ? (
+                <button
+                  type="button"
+                  onClick={handleSyncUsersWithFirebase}
+                  disabled={syncingUsers}
+                  className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[#22C55E]/15 border border-[#22C55E]/40 hover:bg-[#22C55E]/25 text-xs font-bold text-[#4ADE80] inline-flex items-center gap-1.5 disabled:opacity-60"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${syncingUsers ? 'animate-spin' : ''}`} />
+                  <span>{syncingUsers ? 'Syncing Users...' : 'Sync & Restore Users'}</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleConnectFirebaseAdmin}
+                  disabled={connectingFirebase}
+                  className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[#0D1320] border border-[#FACC15]/40 hover:border-[#FACC15] text-xs font-bold text-[#FACC15] inline-flex items-center gap-1.5 disabled:opacity-60"
+                >
+                  <Cloud className="w-3.5 h-3.5" />
+                  <span>{connectingFirebase ? 'Connecting...' : 'Connect Cloud Backup'}</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setNewUserModal(true)}
+                className="ff-btn-ember min-h-[44px] px-4 py-2 rounded-xl text-sm font-bold inline-flex items-center gap-2"
+              >
+                <UserPlus className="w-4 h-4" />
+                <span>Add User</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="px-4 py-3 rounded-xl bg-[#22C55E]/10 border border-[#22C55E]/30 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 text-[#4ADE80] font-semibold">
+              <ShieldCheck className="w-4 h-4 shrink-0" />
+              <span>Account Protection Active: Automatic User Deletion Disabled · Manual Admin Confirmation Required</span>
+            </div>
+            <span className="font-mono text-slate-300">
+              {firebaseAdminEmail ? `Firebase Synced (${firebaseAdminEmail})` : 'Local Database Protected'}
+            </span>
           </div>
 
           <div className="bg-[#131A29] border border-white/[0.08] rounded-2xl divide-y divide-white/[0.07]">
@@ -2029,7 +2202,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   >
                     Adjust Wallet
                   </button>
-                  {u.id !== currentUser.id && (
+                  {u.id !== currentUser.id && u.email.toLowerCase() !== ADMIN_FIREBASE_EMAIL.toLowerCase() && (
                     <>
                       <button
                         type="button"
@@ -2059,14 +2232,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           </>
                         )}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteUser(u)}
-                        className="min-h-[38px] px-3 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs font-medium text-rose-300"
-                      >
-                        Remove
-                      </button>
+                      {u.role !== 'admin' && (
+                        <button
+                          type="button"
+                          onClick={() => openDeleteUserConfirm(u)}
+                          className="min-h-[38px] px-3 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 text-xs font-medium text-rose-300 inline-flex items-center gap-1"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Remove</span>
+                        </button>
+                      )}
                     </>
+                  )}
+                  {(u.id === currentUser.id || u.email.toLowerCase() === ADMIN_FIREBASE_EMAIL.toLowerCase()) && (
+                    <span className="px-2.5 py-1 rounded-lg bg-[#FACC15]/10 border border-[#FACC15]/30 text-[11px] font-semibold text-[#FACC15]">
+                      Protected Admin
+                    </span>
                   )}
                 </div>
               </div>
@@ -3242,6 +3423,109 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             >
               Credit Prize to Wallet
             </button>
+          </form>
+        </div>
+      )}
+
+      {/* MANUAL USER ACCOUNT DELETION CONFIRMATION MODAL */}
+      {deleteUserTarget && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+          onClick={() => !deletingUser && setDeleteUserTarget(null)}
+        >
+          <form
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={handleConfirmDeleteUser}
+            className="w-full sm:max-w-md bg-[#131A29] border border-rose-500/45 rounded-t-3xl sm:rounded-2xl p-6 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-rose-300">
+                <ShieldAlert className="w-5 h-5 shrink-0" />
+                <h3 className="font-display text-lg font-bold text-white">
+                  Confirm User Account Deletion
+                </h3>
+              </div>
+              <button
+                type="button"
+                disabled={deletingUser}
+                onClick={() => setDeleteUserTarget(null)}
+                className="min-h-[40px] min-w-[40px] flex items-center justify-center text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 space-y-1 text-xs">
+              <p className="text-rose-200 font-semibold">
+                This permanently removes the selected player account and associated wallet/match records.
+              </p>
+              <p className="text-slate-300">
+                Account: <span className="font-bold text-white">{deleteUserTarget.username}</span> ({deleteUserTarget.player_id})
+              </p>
+              <p className="text-slate-400">
+                Email: {deleteUserTarget.email} · Balance: {formatPKR(deleteUserTarget.wallet_balance)}
+              </p>
+            </div>
+
+            <label className="flex items-start gap-2.5 text-xs text-slate-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={deleteUserConfirmChecked}
+                onChange={(e) => setDeleteUserConfirmChecked(e.target.checked)}
+                className="mt-0.5 rounded border-white/20 bg-[#0D1320]"
+              />
+              <span>
+                I confirm I am manually deleting this player account and want to proceed permanently.
+              </span>
+            </label>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-300">
+                Type <span className="font-mono font-bold text-[#FACC15]">{deleteUserTarget.username}</span> to confirm
+              </label>
+              <input
+                type="text"
+                required
+                value={deleteUserConfirmInput}
+                onChange={(e) => setDeleteUserConfirmInput(e.target.value)}
+                placeholder={deleteUserTarget.username}
+                className="w-full min-h-[42px] px-3 bg-[#0D1320] border border-white/[0.12] rounded-xl text-sm text-white focus:outline-none focus:border-rose-400"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-slate-300">Reason (Optional audit log note)</label>
+              <input
+                type="text"
+                maxLength={200}
+                value={deleteUserReason}
+                onChange={(e) => setDeleteUserReason(e.target.value)}
+                placeholder="e.g. Duplicate or requested account removal"
+                className="w-full min-h-[42px] px-3 bg-[#0D1320] border border-white/[0.1] rounded-xl text-sm text-white"
+              />
+            </div>
+
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                type="button"
+                disabled={deletingUser}
+                onClick={() => setDeleteUserTarget(null)}
+                className="flex-1 min-h-[44px] rounded-xl bg-[#0D1320] border border-white/[0.12] text-sm font-semibold text-slate-200 hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={
+                  deletingUser ||
+                  !deleteUserConfirmChecked ||
+                  deleteUserConfirmInput.trim() !== deleteUserTarget.username
+                }
+                className="flex-1 min-h-[44px] rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-sm font-bold disabled:opacity-45"
+              >
+                {deletingUser ? 'Deleting...' : 'Confirm Permanent Delete'}
+              </button>
+            </div>
           </form>
         </div>
       )}

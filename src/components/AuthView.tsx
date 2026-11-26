@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
+import { signInWithPopup } from 'firebase/auth';
 import { Eye, EyeOff, KeyRound, ShieldCheck, Upload, UserPlus, LogIn, X } from 'lucide-react';
 import { AVATAR_PRESETS, apiRequest, readImageFileAsDataUrl } from '../lib/api';
+import { auth, googleProvider } from '../lib/firebase';
+import { syncOwnUserToFirestore } from '../lib/firestoreSync';
 import type { UserProfile } from '../types';
 
 interface AuthViewProps {
@@ -29,6 +32,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
   const [avatarUrl, setAvatarUrl] = useState(AVATAR_PRESETS[0].url);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -48,6 +52,28 @@ export const AuthView: React.FC<AuthViewProps> = ({
       setAvatarUrl(dataUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Invalid image file.');
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setError('');
+    setGoogleLoading(true);
+    try {
+      const cred = await signInWithPopup(auth, googleProvider);
+      const idToken = await cred.user.getIdToken();
+      const res = await apiRequest<{ token: string; user: UserProfile }>(
+        '/api/auth/firebase-google',
+        {
+          method: 'POST',
+          body: { idToken },
+        }
+      );
+      await syncOwnUserToFirestore(res.user).catch(() => {});
+      onSuccess(res.token, res.user);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Google Sign-In failed.');
+    } finally {
+      setGoogleLoading(false);
     }
   };
 
@@ -327,7 +353,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || googleLoading}
           className="ff-btn-ember w-full min-h-[46px] px-4 py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.99] disabled:opacity-60"
         >
           {mode === 'login' ? (
@@ -348,6 +374,25 @@ export const AuthView: React.FC<AuthViewProps> = ({
           </span>
         </button>
       </form>
+
+      {mode !== 'admin' && (
+        <div className="mt-4 pt-4 border-t border-white/[0.08] space-y-2.5">
+          <button
+            type="button"
+            onClick={handleGoogleSignIn}
+            disabled={loading || googleLoading}
+            className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-[#0D1320] hover:bg-white/[0.06] border border-white/[0.14] text-sm font-semibold text-white flex items-center justify-center gap-2.5 transition-colors disabled:opacity-60"
+          >
+            <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="#EA4335"
+                d="M12 10.2v3.9h5.5c-.2 1.3-1.5 3.9-5.5 3.9-3.3 0-6-2.7-6-6s2.7-6 6-6c1.9 0 3.1.8 3.8 1.5l2.6-2.5C16.8 3.5 14.6 2.5 12 2.5 6.8 2.5 2.5 6.8 2.5 12s4.3 9.5 9.5 9.5c5.5 0 9.1-3.8 9.1-9.2 0-.6-.1-1.1-.2-1.6H12z"
+              />
+            </svg>
+            <span>{googleLoading ? 'Connecting Google...' : 'Continue with Google'}</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 };

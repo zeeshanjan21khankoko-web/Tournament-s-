@@ -15,6 +15,7 @@ import {
 } from './server/db.ts';
 import {
   type AuthenticatedRequest,
+  BOOTSTRAPPED_ADMIN_EMAIL,
   clearSessionCookie,
   createPersistentSession,
   extractBearerUser,
@@ -28,14 +29,21 @@ import {
   setSessionCookie,
   signToken,
   verifyAdminPasscode,
+  verifyFirebaseGoogleIdToken,
   verifyPassword,
 } from './server/auth.ts';
 import {
   computeTournamentStatus,
   type TournamentStatus,
 } from './shared/pktTime.ts';
+import {
+  ensureTournamentInSqlite,
+  getNextSafeTournamentId,
+  syncMissingTournamentsFromFirestore,
+} from './server/firestoreBridge.ts';
 
 initDatabase();
+syncMissingTournamentsFromFirestore(true).catch(() => {});
 
 const app = express();
 app.set('trust proxy', 1);
@@ -535,7 +543,7 @@ app.get('/api/team-registrations', (req: Request, res: Response) => {
   res.json({ registrations });
 });
 
-app.post('/api/team-registrations', (req: Request, res: Response) => {
+app.post('/api/team-registrations', async (req: Request, res: Response) => {
   try {
     const viewer = extractBearerUser(req);
     const tournamentId = Number(req.body.tournamentId);
@@ -568,6 +576,8 @@ app.post('/api/team-registrations', (req: Request, res: Response) => {
       res.status(400).json({ error: 'Team / clan name must be 2–48 characters.' });
       return;
     }
+
+    await ensureTournamentInSqlite(tournamentId);
 
     const result = db.transaction(() => {
       const t = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as
@@ -895,6 +905,107 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   }
 });
 
+function buildUniqueUsernameFromGoogle(rawName: string, email: string): string {
+  const emailBase = email.split('@')[0] || 'player';
+  let base = (rawName || emailBase)
+    .replace(/[^a-zA-Z0-9_.-]+/g, '_')
+    .replace(/^[_\-.]+|[_\-.]+$/g, '')
+    .slice(0, 18);
+  if (base.length < 3) {
+    base = emailBase.replace(/[^a-zA-Z0-9_.-]+/g, '_').slice(0, 18);
+  }
+  if (base.length < 3) {
+    base = `Player_${crypto.randomInt(100, 999)}`;
+  }
+
+  let candidate = base.slice(0, 24);
+  for (let i = 0; i < 12; i++) {
+    const exists = db
+      .prepare('SELECT 1 FROM users WHERE lower(username) = ?')
+      .get(candidate.toLowerCase());
+    if (!exists) return candidate;
+    const suffix = `_${crypto.randomInt(100, 9999)}`;
+    candidate = `${base.slice(0, 24 - suffix.length)}${suffix}`;
+  }
+  return `Player_${Date.now().toString().slice(-6)}`;
+}
+
+app.post('/api/auth/firebase-google', async (req: Request, res: Response) => {
+  try {
+    const idToken = typeof req.body?.idToken === 'string' ? req.body.idToken.trim() : '';
+    if (!idToken) {
+      res.status(400).json({ error: 'Firebase Google ID token is required.' });
+      return;
+    }
+
+    const identity = await verifyFirebaseGoogleIdToken(idToken);
+    const isBootstrappedAdmin =
+      identity.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+
+    const result = db.transaction(() => {
+      const existing = db
+        .prepare('SELECT id, role, is_blocked FROM users WHERE lower(email) = ?')
+        .get(identity.email.toLowerCase()) as
+        | { id: number; role: 'player' | 'admin'; is_blocked: number }
+        | undefined;
+
+      if (existing) {
+        if (existing.is_blocked === 1) {
+          return { status: 403 as const, error: 'Your account is blocked. Contact an administrator.' };
+        }
+        if (isBootstrappedAdmin && existing.role !== 'admin') {
+          db.prepare("UPDATE users SET role = 'admin' WHERE id = ?").run(existing.id);
+        }
+        if (isBootstrappedAdmin) {
+          db.prepare("INSERT OR IGNORE INTO admins (user_id, admin_level) VALUES (?, 'super_admin')").run(
+            existing.id
+          );
+        }
+        db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, 0)').run(
+          existing.id
+        );
+        return { userId: existing.id, isNew: false };
+      }
+
+      const username = buildUniqueUsernameFromGoogle(identity.name, identity.email);
+      const playerId = generateUniquePlayerId();
+      const randomPasswordHash = hashPassword(crypto.randomBytes(24).toString('hex'));
+      const role: 'player' | 'admin' = isBootstrappedAdmin ? 'admin' : 'player';
+      const avatarUrl = '/src/assets/images/avatar_esports_pro_1795298801657.jpg';
+
+      const info = db
+        .prepare(
+          `INSERT INTO users (player_id, username, email, phone, password_hash, avatar_url, role, wallet_balance)
+           VALUES (?, ?, ?, '', ?, ?, ?, 0)`
+        )
+        .run(playerId, username, identity.email.toLowerCase(), randomPasswordHash, avatarUrl, role);
+
+      const newId = Number(info.lastInsertRowid);
+      db.prepare('INSERT INTO wallet_accounts (user_id, available_balance) VALUES (?, 0)').run(newId);
+      if (role === 'admin') {
+        db.prepare("INSERT OR IGNORE INTO admins (user_id, admin_level) VALUES (?, 'super_admin')").run(newId);
+      }
+      return { userId: newId, isNew: true };
+    }).immediate();
+
+    if ('error' in result) {
+      res.status(result.status ?? 403).json({ error: result.error });
+      return;
+    }
+
+    const user = getUserById(result.userId!)!;
+    const sessionToken = createPersistentSession(user.id);
+    setSessionCookie(req, res, sessionToken);
+    const token = signToken(user.id, user.role);
+    res.json({ token, user, isNew: Boolean(result.isNew) });
+  } catch (err) {
+    console.error('Firebase Google auth error:', err);
+    res.status(401).json({
+      error: err instanceof Error ? err.message : 'Google Sign-In verification failed.',
+    });
+  }
+});
+
 app.post('/api/auth/claim-admin', (req: Request, res: Response) => {
   try {
     const username = typeof req.body.username === 'string' ? req.body.username.trim() : '';
@@ -1146,7 +1257,8 @@ function enrichTournament(t: Record<string, unknown>, viewer: ReturnType<typeof 
   };
 }
 
-app.get('/api/tournaments', (req: Request, res: Response) => {
+app.get('/api/tournaments', async (req: Request, res: Response) => {
+  await syncMissingTournamentsFromFirestore();
   const viewer = extractBearerUser(req);
   const rows = db.prepare('SELECT * FROM tournaments').all() as Array<Record<string, unknown>>;
   const deletedRows = db
@@ -1179,15 +1291,13 @@ app.get('/api/tournaments', (req: Request, res: Response) => {
   });
 });
 
-app.get('/api/tournaments/:id', (req: Request, res: Response) => {
+app.get('/api/tournaments/:id', async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) {
     res.status(400).json({ error: 'Invalid tournament ID.' });
     return;
   }
-  const row = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id) as
-    | Record<string, unknown>
-    | undefined;
+  const row = await ensureTournamentInSqlite(id);
   if (!row) {
     res.status(404).json({ error: 'Tournament not found.' });
     return;
@@ -1196,7 +1306,7 @@ app.get('/api/tournaments/:id', (req: Request, res: Response) => {
   res.json({ tournament: enrichTournament(row, viewer) });
 });
 
-app.post('/api/tournaments/:id/join', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/tournaments/:id/join', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const tournamentId = Number(req.params.id);
     const inGameName = typeof req.body.inGameName === 'string' ? req.body.inGameName.trim() : '';
@@ -1214,6 +1324,8 @@ app.post('/api/tournaments/:id/join', requireAuth, (req: AuthenticatedRequest, r
       res.status(400).json({ error: 'In-game ID is required (2–32 characters).' });
       return;
     }
+
+    await ensureTournamentInSqlite(tournamentId);
 
     const result = db.transaction(() => {
       const t = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as
@@ -1788,7 +1900,8 @@ app.post('/api/lucky-draw/spin', requireAuth, (req: AuthenticatedRequest, res: R
 });
 
 // --- ADMIN PANEL ENDPOINTS ---
-app.get('/api/admin/overview', requireAuth, requireAdmin, (_req: AuthenticatedRequest, res: Response) => {
+app.get('/api/admin/overview', requireAuth, requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  await syncMissingTournamentsFromFirestore();
   const userStats = db
     .prepare(
       `SELECT
@@ -1799,9 +1912,17 @@ app.get('/api/admin/overview', requireAuth, requireAdmin, (_req: AuthenticatedRe
     )
     .get() as Record<string, number>;
 
-  const tournamentRows = db
-    .prepare('SELECT id, match_time, end_time, status FROM tournaments')
-    .all() as Array<{ id: number; match_time: string; end_time: string; status: TournamentStatus }>;
+  const deletedRows = db
+    .prepare('SELECT tournament_id FROM deleted_tournaments')
+    .all() as Array<{ tournament_id: number }>;
+  const deletedSet = new Set(deletedRows.map((d) => Number(d.tournament_id)));
+
+  const tournamentRows = (
+    db
+      .prepare('SELECT id, match_time, end_time, status FROM tournaments')
+      .all() as Array<{ id: number; match_time: string; end_time: string; status: TournamentStatus }>
+  ).filter((row) => !deletedSet.has(Number(row.id)));
+
   const activeTournaments = tournamentRows.filter((row) => {
     const hasWinners = db.prepare('SELECT 1 FROM winners WHERE tournament_id = ? LIMIT 1').get(row.id);
     const st = computeTournamentStatus({
@@ -1966,14 +2087,27 @@ app.patch('/api/admin/users/:id', requireAuth, requireAdmin, (req: Authenticated
 
     const result = db.transaction(() => {
       const target = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId) as
-        | { id: number; role: 'player' | 'admin'; is_blocked: number; wallet_balance: number; username: string }
+        | {
+            id: number;
+            role: 'player' | 'admin';
+            is_blocked: number;
+            wallet_balance: number;
+            username: string;
+            email: string;
+          }
         | undefined;
       if (!target) return { status: 404, error: 'User not found.' };
+
+      const isBootstrappedTarget =
+        target.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
 
       if (req.body.isBlocked !== undefined) {
         const nextBlocked = req.body.isBlocked ? 1 : 0;
         if (targetId === req.user!.id && nextBlocked === 1) {
           return { status: 400, error: 'You cannot block your own administrator account.' };
+        }
+        if (isBootstrappedTarget && nextBlocked === 1) {
+          return { status: 403, error: 'The primary administrator account cannot be blocked.' };
         }
         db.prepare('UPDATE users SET is_blocked = ? WHERE id = ?').run(nextBlocked, targetId);
       }
@@ -1981,6 +2115,9 @@ app.patch('/api/admin/users/:id', requireAuth, requireAdmin, (req: Authenticated
       if (req.body.role === 'admin' || req.body.role === 'player') {
         if (targetId === req.user!.id && req.body.role !== 'admin') {
           return { status: 400, error: 'You cannot demote your own administrator account.' };
+        }
+        if (isBootstrappedTarget && req.body.role !== 'admin') {
+          return { status: 403, error: 'The primary administrator role cannot be revoked.' };
         }
         db.prepare('UPDATE users SET role = ? WHERE id = ?').run(req.body.role, targetId);
         if (req.body.role === 'admin') {
@@ -2040,22 +2177,249 @@ app.patch('/api/admin/users/:id', requireAuth, requireAdmin, (req: Authenticated
   }
 });
 
+app.get('/api/admin/user-policy', requireAuth, requireAdmin, (_req: AuthenticatedRequest, res: Response) => {
+  const logs = db
+    .prepare(
+      `SELECT id, user_id, player_id, username, email, deleted_by_admin_id, deleted_by_username, confirmation_note, deleted_at
+       FROM deleted_users_log
+       ORDER BY id DESC
+       LIMIT 50`
+    )
+    .all() as Array<{
+    id: number;
+    user_id: number;
+    player_id: string;
+    username: string;
+    email: string;
+    deleted_by_admin_id: number | null;
+    deleted_by_username: string;
+    confirmation_note: string;
+    deleted_at: string;
+  }>;
+
+  const deletedUserIds = Array.from(
+    new Set(logs.map((row) => Number(row.user_id)).filter((n) => Number.isInteger(n) && n > 0))
+  );
+
+  res.json({
+    policy: {
+      autoUserDeletionDisabled: true,
+      manualAdminOnlyUserDeletion: true,
+      preserveUserRegistrations: true,
+    },
+    deletedUserIds,
+    deletedUsersLog: logs,
+  });
+});
+
+app.post('/api/admin/users/restore-from-cloud', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const cloudUsers = Array.isArray(req.body?.cloudUsers) ? req.body.cloudUsers : [];
+    if (cloudUsers.length === 0) {
+      res.json({ ok: true, restoredCount: 0, skippedCount: 0 });
+      return;
+    }
+
+    const deletedRows = db
+      .prepare('SELECT user_id, lower(email) as email FROM deleted_users_log')
+      .all() as Array<{ user_id: number; email: string }>;
+    const deletedEmails = new Set(deletedRows.map((d) => d.email));
+    const deletedIds = new Set(deletedRows.map((d) => Number(d.user_id)));
+
+    const outcome = db.transaction(() => {
+      let restoredCount = 0;
+      let skippedCount = 0;
+
+      for (const raw of cloudUsers.slice(0, 500)) {
+        if (!raw || typeof raw !== 'object') {
+          skippedCount += 1;
+          continue;
+        }
+        const rec = raw as Record<string, unknown>;
+        const email = typeof rec.email === 'string' ? rec.email.trim().toLowerCase() : '';
+        const rawUsername = typeof rec.username === 'string' ? rec.username.trim() : '';
+        const sqliteId = Number(rec.sqlite_id);
+
+        if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          skippedCount += 1;
+          continue;
+        }
+        if (deletedEmails.has(email) || (Number.isInteger(sqliteId) && deletedIds.has(sqliteId))) {
+          skippedCount += 1;
+          continue;
+        }
+
+        const existingByEmail = db
+          .prepare('SELECT id FROM users WHERE lower(email) = ?')
+          .get(email) as { id: number } | undefined;
+        if (existingByEmail) {
+          skippedCount += 1;
+          continue;
+        }
+
+        let username = rawUsername
+          .replace(/[^a-zA-Z0-9_.-]+/g, '_')
+          .slice(0, 24);
+        if (username.length < 3) {
+          username = buildUniqueUsernameFromGoogle(rawUsername, email);
+        } else {
+          const usernameTaken = db
+            .prepare('SELECT 1 FROM users WHERE lower(username) = ?')
+            .get(username.toLowerCase());
+          if (usernameTaken) {
+            username = buildUniqueUsernameFromGoogle(username, email);
+          }
+        }
+
+        let playerId = typeof rec.player_id === 'string' ? rec.player_id.trim() : '';
+        if (
+          !playerId ||
+          playerId.length < 3 ||
+          playerId.length > 32 ||
+          db.prepare('SELECT 1 FROM users WHERE player_id = ?').get(playerId)
+        ) {
+          playerId = generateUniquePlayerId();
+        }
+
+        const phone = typeof rec.phone === 'string' ? rec.phone.trim().slice(0, 24) : '';
+        const avatarChecked = validateImageInput(rec.avatar_url, 1024 * 1024);
+        const avatarUrl = avatarChecked || '/src/assets/images/avatar_esports_pro_1795298801657.jpg';
+        const isBootstrapped = email === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+        const role: 'player' | 'admin' = isBootstrapped ? 'admin' : 'player';
+        const isBlocked = rec.is_blocked === 1 && !isBootstrapped ? 1 : 0;
+        const walletBalance = Math.max(0, Math.floor(Number(rec.wallet_balance) || 0));
+        const matchesPlayed = Math.max(0, Math.floor(Number(rec.matches_played) || 0));
+        const wins = Math.max(0, Math.floor(Number(rec.wins) || 0));
+        const points = Math.max(0, Math.floor(Number(rec.points) || 0));
+        const tempPasswordHash = hashPassword(crypto.randomBytes(24).toString('hex'));
+
+        const info = db
+          .prepare(
+            `INSERT INTO users (
+               player_id, username, email, phone, password_hash, avatar_url, role, is_blocked,
+               wallet_balance, matches_played, wins, points
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            playerId,
+            username,
+            email,
+            phone,
+            tempPasswordHash,
+            avatarUrl,
+            role,
+            isBlocked,
+            walletBalance,
+            matchesPlayed,
+            wins,
+            points
+          );
+        const newId = Number(info.lastInsertRowid);
+        db.prepare('INSERT OR IGNORE INTO wallet_accounts (user_id, available_balance) VALUES (?, ?)').run(
+          newId,
+          walletBalance
+        );
+        if (role === 'admin') {
+          db.prepare("INSERT OR IGNORE INTO admins (user_id, admin_level) VALUES (?, 'super_admin')").run(
+            newId
+          );
+        }
+        restoredCount += 1;
+      }
+
+      return { restoredCount, skippedCount };
+    }).immediate();
+
+    res.json({ ok: true, ...outcome });
+  } catch (err) {
+    console.error('Restore users from cloud error:', err);
+    res.status(500).json({ error: 'Failed to restore cloud user accounts.' });
+  }
+});
+
 app.delete('/api/admin/users/:id', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
   const targetId = Number(req.params.id);
   if (!Number.isInteger(targetId) || targetId <= 0) {
     res.status(400).json({ error: 'Invalid user ID.' });
     return;
   }
+
+  const manualHeader = req.headers['x-manual-admin-action'];
+  if (manualHeader !== 'delete-user-confirm' || req.body?.confirmManualDelete !== true) {
+    res.status(403).json({
+      error:
+        'Automatic or unconfirmed user account deletion is permanently disabled. Admin must explicitly confirm manual deletion.',
+    });
+    return;
+  }
+
   if (targetId === req.user!.id) {
     res.status(400).json({ error: 'You cannot delete your own active account.' });
     return;
   }
-  const info = db.prepare('DELETE FROM users WHERE id = ?').run(targetId);
-  if (info.changes === 0) {
-    res.status(404).json({ error: 'User not found.' });
+
+  const confirmUsername = typeof req.body?.confirmUsername === 'string' ? req.body.confirmUsername.trim() : '';
+  const confirmationNote =
+    typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 200) : 'Manual admin removal';
+
+  const result = db.transaction(() => {
+    const target = db
+      .prepare('SELECT id, player_id, username, email, role FROM users WHERE id = ?')
+      .get(targetId) as
+      | { id: number; player_id: string; username: string; email: string; role: 'player' | 'admin' }
+      | undefined;
+
+    if (!target) {
+      return { status: 404 as const, error: 'User not found.' };
+    }
+    if (target.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()) {
+      return { status: 403 as const, error: 'The primary administrator account is permanently protected.' };
+    }
+    if (target.role === 'admin') {
+      return {
+        status: 403 as const,
+        error: 'Demote an administrator account to Player before manually deleting it.',
+      };
+    }
+    if (!confirmUsername || confirmUsername !== target.username) {
+      return {
+        status: 400 as const,
+        error: `Confirmation username mismatch. Type "${target.username}" exactly to confirm deletion.`,
+      };
+    }
+
+    db.prepare(
+      `INSERT INTO deleted_users_log (
+         user_id, player_id, username, email, deleted_by_admin_id, deleted_by_username, confirmation_note
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      target.id,
+      target.player_id,
+      target.username,
+      target.email,
+      req.user!.id,
+      req.user!.username,
+      confirmationNote
+    );
+
+    db.prepare('DELETE FROM users WHERE id = ?').run(targetId);
+
+    const logRows = db
+      .prepare('SELECT DISTINCT user_id FROM deleted_users_log ORDER BY user_id DESC LIMIT 500')
+      .all() as Array<{ user_id: number }>;
+
+    return {
+      status: 200 as const,
+      deletedUserIds: logRows.map((r) => Number(r.user_id)),
+    };
+  }).immediate();
+
+  if ('error' in result) {
+    res.status(result.status).json({ error: result.error });
     return;
   }
-  res.json({ ok: true });
+
+  res.json({ ok: true, deletedUserId: targetId, deletedUserIds: result.deletedUserIds });
 });
 
 app.post('/api/admin/users/:id/award-prize', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
@@ -2152,7 +2516,7 @@ app.get('/api/admin/tournament-policy', requireAuth, requireAdmin, (_req: Authen
   });
 });
 
-app.post('/api/admin/tournaments', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/admin/tournaments', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const manualHeader = req.headers['x-manual-admin-action'];
     if (manualHeader !== 'create-tournament-button' || req.body?.manualCreateConfirm !== true) {
@@ -2269,14 +2633,17 @@ app.post('/api/admin/tournaments', requireAuth, requireAdmin, (req: Authenticate
       return;
     }
 
-    const info = db
-      .prepare(
+    const nextId = await getNextSafeTournamentId();
+
+    db.transaction(() => {
+      db.prepare('DELETE FROM deleted_tournaments WHERE tournament_id = ?').run(nextId);
+      db.prepare(
         `INSERT INTO tournaments (
-           title, game_name, mode, entry_fee, prize_pool, prize_1st, prize_2nd, prize_3rd, prize_4th, prize_5th,
+           id, title, game_name, mode, entry_fee, prize_pool, prize_1st, prize_2nd, prize_3rd, prize_4th, prize_5th,
            max_slots, match_time, end_time, status, banner_url, rules, room_id, room_pass, created_by
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        nextId,
         title,
         gameName,
         mode,
@@ -2298,7 +2665,23 @@ app.post('/api/admin/tournaments', requireAuth, requireAdmin, (req: Authenticate
         req.user!.id
       );
 
-    const created = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(Number(info.lastInsertRowid)) as Record<
+      try {
+        const seqRow = db
+          .prepare("SELECT seq FROM sqlite_sequence WHERE name = 'tournaments'")
+          .get() as { seq?: number } | undefined;
+        if (seqRow) {
+          db.prepare("UPDATE sqlite_sequence SET seq = ? WHERE name = 'tournaments'").run(
+            Math.max(Number(seqRow.seq || 0), nextId)
+          );
+        } else {
+          db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('tournaments', ?)").run(nextId);
+        }
+      } catch {
+        // Ignore if sqlite_sequence is unavailable
+      }
+    }).immediate();
+
+    const created = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(nextId) as Record<
       string,
       unknown
     >;
@@ -2309,12 +2692,14 @@ app.post('/api/admin/tournaments', requireAuth, requireAdmin, (req: Authenticate
   }
 });
 
-app.patch('/api/admin/tournaments/:id', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+app.patch('/api/admin/tournaments/:id', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const existing = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id) as
-      | Record<string, unknown>
-      | undefined;
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Invalid tournament ID.' });
+      return;
+    }
+    const existing = await ensureTournamentInSqlite(id);
     if (!existing) {
       res.status(404).json({ error: 'Tournament not found.' });
       return;
@@ -2458,9 +2843,15 @@ app.patch('/api/admin/tournaments/:id', requireAuth, requireAdmin, (req: Authent
   }
 });
 
-app.delete('/api/admin/tournaments/:id', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+app.delete('/api/admin/tournaments/:id', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ error: 'Invalid tournament ID.' });
+      return;
+    }
+    await ensureTournamentInSqlite(id);
+
     const result = db.transaction(() => {
       const t = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id) as
         | { id: number; title: string; entry_fee: number; status: string }
@@ -2519,7 +2910,7 @@ app.delete('/api/admin/tournaments/:id', requireAuth, requireAdmin, (req: Authen
   }
 });
 
-app.post('/api/admin/tournaments/:id/players', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/admin/tournaments/:id/players', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const tournamentId = Number(req.params.id);
     const identifier = typeof req.body.playerIdentifier === 'string' ? req.body.playerIdentifier.trim() : '';
@@ -2527,10 +2918,16 @@ app.post('/api/admin/tournaments/:id/players', requireAuth, requireAdmin, (req: 
     const inGameId = typeof req.body.inGameId === 'string' ? req.body.inGameId.trim() : '';
     const chargeFee = Boolean(req.body.chargeFee);
 
+    if (!Number.isInteger(tournamentId) || tournamentId <= 0) {
+      res.status(400).json({ error: 'Invalid tournament ID.' });
+      return;
+    }
     if (!identifier) {
       res.status(400).json({ error: 'Player ID, username, or email is required.' });
       return;
     }
+
+    await ensureTournamentInSqlite(tournamentId);
 
     const result = db.transaction(() => {
       const t = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as
@@ -2618,11 +3015,13 @@ app.delete(
   '/api/admin/tournaments/:id/players/:userId',
   requireAuth,
   requireAdmin,
-  (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response) => {
     try {
       const tournamentId = Number(req.params.id);
       const userId = Number(req.params.userId);
       const refund = req.query.refund === 'true';
+
+      await ensureTournamentInSqlite(tournamentId);
 
       const result = db.transaction(() => {
         const t = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId) as
@@ -2892,7 +3291,7 @@ function saveTournamentWinners(
   }).immediate();
 }
 
-app.post('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+app.post('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const tournamentId = Number(req.params.id);
     if (!Number.isInteger(tournamentId) || tournamentId <= 0) {
@@ -2906,6 +3305,7 @@ app.post('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, (req: 
       return;
     }
 
+    await ensureTournamentInSqlite(tournamentId);
     const result = saveTournamentWinners(tournamentId, req.user!.id, winnersInput, false);
     if ('error' in result && result.error) {
       res.status(result.status).json({ error: result.error });
@@ -2921,7 +3321,7 @@ app.post('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, (req: 
   }
 });
 
-app.put('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, (req: AuthenticatedRequest, res: Response) => {
+app.put('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const tournamentId = Number(req.params.id);
     if (!Number.isInteger(tournamentId) || tournamentId <= 0) {
@@ -2935,6 +3335,7 @@ app.put('/api/admin/tournaments/:id/winners', requireAuth, requireAdmin, (req: A
       return;
     }
 
+    await ensureTournamentInSqlite(tournamentId);
     const result = saveTournamentWinners(tournamentId, req.user!.id, winnersInput, true);
     if ('error' in result && result.error) {
       res.status(result.status).json({ error: result.error });
@@ -3185,13 +3586,20 @@ app.post(
   '/api/admin/team-registrations/:id/review',
   requireAuth,
   requireAdmin,
-  (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response) => {
     try {
       const regId = Number(req.params.id);
       const action = req.body.action === 'confirm' ? 'confirm' : req.body.action === 'reject' ? 'reject' : null;
       if (!Number.isInteger(regId) || regId <= 0 || !action) {
         res.status(400).json({ error: 'Valid registration ID and action (confirm/reject) are required.' });
         return;
+      }
+
+      const preReg = db
+        .prepare('SELECT tournament_id FROM team_registrations WHERE id = ?')
+        .get(regId) as { tournament_id: number } | undefined;
+      if (preReg) {
+        await ensureTournamentInSqlite(preReg.tournament_id);
       }
 
       const result = db.transaction(() => {

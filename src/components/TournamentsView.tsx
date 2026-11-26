@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
+  AlertCircle,
   Calendar,
   CheckCircle2,
   Clock,
@@ -8,6 +9,7 @@ import {
   Gamepad2,
   KeyRound,
   LayoutGrid,
+  RefreshCw,
   Search,
   Swords,
   Trophy,
@@ -15,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import {
+  KELLY_TOURNAMENT_ARTWORK,
   TOURNAMENT_MODES,
   formatPKR,
   formatPktCompact,
@@ -32,6 +35,11 @@ interface TournamentsViewProps {
   user: UserProfile | null;
   selectedTournament: Tournament | null;
   selectedMode: 'all' | TournamentMode;
+  loading?: boolean;
+  errorMessage?: string;
+  detailNotice?: string;
+  onRetry?: () => void;
+  onClearDetailNotice?: () => void;
   onChangeMode: (mode: 'all' | TournamentMode) => void;
   onSelectTournament: (t: Tournament | null) => void;
   onJoinTournament: (tournamentId: number, inGameName: string, inGameId: string) => Promise<void>;
@@ -43,6 +51,11 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
   user,
   selectedTournament,
   selectedMode,
+  loading = false,
+  errorMessage = '',
+  detailNotice = '',
+  onRetry,
+  onClearDetailNotice,
   onChangeMode,
   onSelectTournament,
   onJoinTournament,
@@ -58,6 +71,14 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
   const [joining, setJoining] = useState(false);
   const [joinError, setJoinError] = useState('');
   const [joinSuccess, setJoinSuccess] = useState('');
+
+  const resetAllFilters = () => {
+    setFilter('all');
+    setPreferredArenaFilter('all');
+    setGameFilter('all');
+    setQuery('');
+    onChangeMode('all');
+  };
 
   const counters = useMemo(() => {
     return {
@@ -271,14 +292,78 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
         </div>
       </div>
 
-      {/* 4. Empty State OR Tournament Grid (Matches Screenshot 2) */}
-      {filtered.length === 0 ? (
-        <div className="bg-[#131A29]/80 border border-dashed border-white/[0.1] rounded-3xl py-16 px-6 text-center space-y-2.5">
+      {detailNotice && (
+        <div className="bg-amber-500/10 border border-amber-500/35 rounded-2xl px-4 py-3 flex items-center justify-between gap-3 text-xs sm:text-sm text-amber-200">
+          <span className="inline-flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-[#FACC15] shrink-0" />
+            <span>{detailNotice}</span>
+          </span>
+          {onClearDetailNotice && (
+            <button
+              type="button"
+              onClick={onClearDetailNotice}
+              aria-label="Dismiss notice"
+              className="p-1 text-amber-200/80 hover:text-white shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 4. Loading / Error / Empty State OR Tournament Grid (Matches Screenshot 2) */}
+      {loading && tournaments.length === 0 ? (
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
+          {[0, 1, 2].map((idx) => (
+            <div
+              key={idx}
+              className="bg-[#131A29] border border-white/[0.08] rounded-2xl overflow-hidden animate-pulse"
+            >
+              <div className="aspect-video bg-[#0D1320]" />
+              <div className="p-4 sm:p-5 space-y-3">
+                <div className="h-5 bg-white/[0.07] rounded-lg w-3/4" />
+                <div className="h-3.5 bg-white/[0.05] rounded-lg w-1/2" />
+                <div className="h-10 bg-white/[0.06] rounded-xl w-full mt-2" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : errorMessage && tournaments.length === 0 ? (
+        <div className="bg-[#131A29]/80 border border-rose-500/30 rounded-3xl py-14 px-6 text-center space-y-3">
+          <AlertCircle className="w-12 h-12 text-rose-400 mx-auto" />
+          <p className="font-display text-lg font-bold text-white">Unable to Load Tournaments</p>
+          <p className="text-xs sm:text-sm text-slate-400 max-w-md mx-auto">{errorMessage}</p>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="ff-btn-ember min-h-[42px] px-5 py-2 rounded-xl text-xs font-extrabold inline-flex items-center gap-2 mt-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>Retry Loading</span>
+            </button>
+          )}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="bg-[#131A29]/80 border border-dashed border-white/[0.1] rounded-3xl py-16 px-6 text-center space-y-3">
           <Trophy className="w-14 h-14 text-[#FACC15]/35 mx-auto" />
-          <p className="font-display text-lg font-bold text-white">No Tournaments Found</p>
-          <p className="text-xs sm:text-sm text-slate-400">
-            Check back later for new tournaments
+          <p className="font-display text-lg font-bold text-white">
+            {tournaments.length > 0 ? 'No Matching Tournaments' : 'No Tournaments Found'}
           </p>
+          <p className="text-xs sm:text-sm text-slate-400">
+            {tournaments.length > 0
+              ? 'No tournaments match the selected status, mode, or search filter.'
+              : 'Check back later for new tournaments'}
+          </p>
+          {tournaments.length > 0 && (
+            <button
+              type="button"
+              onClick={resetAllFilters}
+              className="ff-btn-ember min-h-[40px] px-4 py-2 rounded-xl text-xs font-extrabold inline-flex items-center gap-2"
+            >
+              <span>Show All Tournaments ({tournaments.length})</span>
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
@@ -299,9 +384,14 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
               >
                 <div className="relative aspect-video bg-[#0D1320] overflow-hidden">
                   <img
-                    src={t.banner_url}
+                    src={t.banner_url || KELLY_TOURNAMENT_ARTWORK}
                     alt={t.title}
                     referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      if (!e.currentTarget.src.endsWith(KELLY_TOURNAMENT_ARTWORK)) {
+                        e.currentTarget.src = KELLY_TOURNAMENT_ARTWORK;
+                      }
+                    }}
                     className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-200"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-[#131A29] via-black/30 to-transparent" />
@@ -440,9 +530,14 @@ export const TournamentsView: React.FC<TournamentsViewProps> = ({
             >
               <div className="relative h-44 sm:h-52 bg-[#0D1320]">
                 <img
-                  src={selectedTournament.banner_url}
+                  src={selectedTournament.banner_url || KELLY_TOURNAMENT_ARTWORK}
                   alt={selectedTournament.title}
                   referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    if (!e.currentTarget.src.endsWith(KELLY_TOURNAMENT_ARTWORK)) {
+                      e.currentTarget.src = KELLY_TOURNAMENT_ARTWORK;
+                    }
+                  }}
                   className="w-full h-full object-cover"
                 />
                 <div className="absolute inset-0 bg-gradient-to-t from-[#131A29] via-[#131A29]/45 to-transparent" />

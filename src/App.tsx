@@ -32,6 +32,8 @@ import {
   saveDeletedTournamentIds,
 } from './lib/offlineCache';
 import {
+  fetchTournamentByIdFromFirestore,
+  signOutFirebaseAdmin,
   subscribeTournamentPolicyFromFirestore,
   subscribeTournamentsFromFirestore,
 } from './lib/firestoreSync';
@@ -85,12 +87,31 @@ const TAB_TO_PATH: Record<ActiveTab, string> = {
 
 function pathToTab(pathname: string): ActiveTab {
   const clean = pathname.replace(/\/+$/, '') || '/';
-  if (clean === '/tournaments') return 'tournaments';
+  if (clean === '/tournaments' || clean.startsWith('/tournaments/')) return 'tournaments';
   if (clean === '/leaderboard') return 'leaderboard';
   if (clean === '/wallet') return 'wallet';
   if (clean === '/profile') return 'profile';
   if (clean === '/admin') return 'admin';
   return 'home';
+}
+
+function extractRequestedTournamentId(pathname: string, search: string): number | null {
+  const pathMatch = pathname.match(/^\/tournaments\/(\d+)\/?$/i);
+  if (pathMatch) {
+    const n = Number(pathMatch[1]);
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  try {
+    const params = new URLSearchParams(search);
+    const raw = params.get('tournament') || params.get('id');
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isInteger(n) && n > 0) return n;
+    }
+  } catch {
+    // Ignore malformed search string
+  }
+  return null;
 }
 
 interface LuckyDrawEntry {
@@ -130,6 +151,9 @@ export default function App() {
   const [apiDeletedIds, setApiDeletedIds] = useState<number[]>(() => loadDeletedTournamentIds());
   const [cloudDeletedIds, setCloudDeletedIds] = useState<number[]>([]);
   const [hasLoadedApi, setHasLoadedApi] = useState(false);
+  const [loadingTournaments, setLoadingTournaments] = useState(true);
+  const [tournamentLoadError, setTournamentLoadError] = useState('');
+  const [tournamentDetailNotice, setTournamentDetailNotice] = useState('');
   const [announcements, setAnnouncements] = useState<AnnouncementRecord[]>([]);
   const [videos, setVideos] = useState<YouTubeVideoRecord[]>([]);
   const [topLeaderboard, setTopLeaderboard] = useState<LeaderboardEntry[]>([]);
@@ -149,6 +173,13 @@ export default function App() {
   const [paymentChannels, setPaymentChannels] = useState<PaymentChannel[]>([]);
 
   const lastPublicSyncRef = useRef<number>(0);
+  const cloudTournamentsRef = useRef<Tournament[]>([]);
+  const selectedTournamentIdRef = useRef<number | null>(null);
+  const pendingUrlTourIdRef = useRef<number | null>(
+    typeof window !== 'undefined'
+      ? extractRequestedTournamentId(window.location.pathname, window.location.search)
+      : null
+  );
 
   // Restore persistent server session (HttpOnly cookie) once on app launch
   useEffect(() => {
@@ -194,8 +225,20 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined' || !authChecked) return;
     const targetPath = TAB_TO_PATH[activeTab];
-    if (window.location.pathname !== targetPath) {
-      window.history.pushState({ tab: activeTab }, '', targetPath);
+    const targetSearch =
+      activeTab === 'tournaments' && selectedTournament
+        ? `?tournament=${selectedTournament.id}`
+        : activeTab === 'tournaments' && pendingUrlTourIdRef.current
+          ? window.location.search
+          : '';
+    const currentFull = `${window.location.pathname}${window.location.search}`;
+    const targetFull = `${targetPath}${targetSearch}`;
+    if (currentFull !== targetFull) {
+      window.history.pushState(
+        { tab: activeTab, tournamentId: selectedTournament?.id ?? null },
+        '',
+        targetFull
+      );
     }
     const canonicalHref = `${window.location.origin}${targetPath}`;
     let canonical = document.querySelector<HTMLLinkElement>('link[rel="canonical"]');
@@ -213,17 +256,30 @@ export default function App() {
       document.head.appendChild(ogUrl);
     }
     ogUrl.content = canonicalHref;
-  }, [activeTab, authChecked]);
+  }, [activeTab, selectedTournament, authChecked]);
+
+  // Replaced below with popstate handler after openTournamentById is defined
+  const popStateTriggerRef = useRef<((id: number) => void) | null>(null);
 
   useEffect(() => {
     const handlePopState = () => {
       const next = pathToTab(window.location.pathname);
+      const urlTourId = extractRequestedTournamentId(
+        window.location.pathname,
+        window.location.search
+      );
       if ((next === 'wallet' || next === 'profile' || next === 'admin') && !user) {
         setActiveTab('home');
       } else if (next === 'admin' && user?.role !== 'admin') {
         setActiveTab('home');
       } else {
         setActiveTab(next);
+      }
+      if (next === 'tournaments' && urlTourId) {
+        popStateTriggerRef.current?.(urlTourId);
+      } else {
+        selectedTournamentIdRef.current = null;
+        setSelectedTournament(null);
       }
     };
     window.addEventListener('popstate', handlePopState);
@@ -269,7 +325,11 @@ export default function App() {
   useEffect(() => {
     const unsubscribeTours = subscribeTournamentsFromFirestore(
       (list) => {
+        cloudTournamentsRef.current = list;
         setCloudTournaments((prev) => (sameJson(prev, list) ? prev : list));
+        if (list.length > 0) {
+          setTournamentLoadError('');
+        }
       },
       (err) => {
         console.warn('Firestore tournament listener notice:', err.message);
@@ -304,15 +364,30 @@ export default function App() {
   const liveSelectedTournament = useMemo(() => {
     if (!selectedTournament) return null;
     const match = liveTournaments.find((t) => t.id === selectedTournament.id);
-    if (match) return match;
-    const computed = computeTournamentStatus(selectedTournament, nowMs);
-    return computed === selectedTournament.status
-      ? selectedTournament
-      : { ...selectedTournament, status: computed };
+    const merged: Tournament = match
+      ? {
+          ...match,
+          ...selectedTournament,
+          registered_players:
+            selectedTournament.registered_players && selectedTournament.registered_players.length > 0
+              ? selectedTournament.registered_players
+              : match.registered_players,
+          winners:
+            selectedTournament.winners && selectedTournament.winners.length > 0
+              ? selectedTournament.winners
+              : match.winners,
+          room_id: selectedTournament.room_id || match.room_id,
+          room_pass: selectedTournament.room_pass || match.room_pass,
+          is_registered: selectedTournament.is_registered || match.is_registered,
+        }
+      : selectedTournament;
+    const computed = computeTournamentStatus(merged, nowMs);
+    return computed === merged.status ? merged : { ...merged, status: computed };
   }, [selectedTournament, liveTournaments, nowMs]);
 
   const loadTournamentsAndPublic = useCallback(async (authToken: string | null) => {
     lastPublicSyncRef.current = Date.now();
+    setLoadingTournaments(true);
     try {
       const [tourRes, annRes, channelRes, videoRes, lbRes] = await Promise.all([
         apiRequest<{ tournaments: Tournament[]; deletedTournamentIds?: number[] }>('/api/tournaments', {
@@ -333,6 +408,7 @@ export default function App() {
         : [];
 
       setHasLoadedApi(true);
+      setTournamentLoadError('');
       setOfflineFallbackTournaments([]);
       setApiDeletedIds((prev) => (sameJson(prev, nextDeletedIds) ? prev : nextDeletedIds));
       setApiTournaments((prev) => {
@@ -340,7 +416,7 @@ export default function App() {
         leaderboardDataChanged = true;
         return nextApiTournaments;
       });
-      if (nextApiTournaments.length === 0 && cloudTournaments.length === 0) {
+      if (nextApiTournaments.length === 0 && cloudTournamentsRef.current.length === 0) {
         saveCachedTournaments([]);
       }
 
@@ -376,7 +452,10 @@ export default function App() {
       const deletedSet = new Set(nextDeletedIds);
       setSelectedTournament((prev) => {
         if (!prev) return null;
-        if (deletedSet.has(prev.id)) return null;
+        if (deletedSet.has(prev.id)) {
+          selectedTournamentIdRef.current = null;
+          return null;
+        }
         const found = nextApiTournaments.find((t) => t.id === prev.id);
         if (!found) return prev;
         return sameJson(prev, found) ? prev : found;
@@ -385,10 +464,17 @@ export default function App() {
       const cached = loadCachedTournaments();
       if (cached.tournaments.length > 0) {
         setOfflineFallbackTournaments((prev) => (prev.length === 0 ? cached.tournaments : prev));
+        setTournamentLoadError('');
+      } else if (cloudTournamentsRef.current.length === 0) {
+        setTournamentLoadError(
+          err instanceof Error ? err.message : 'Failed to load tournaments. Please try again.'
+        );
       }
       console.error('Failed to load tournaments:', err);
+    } finally {
+      setLoadingTournaments(false);
     }
-  }, [cloudTournaments.length]);
+  }, []);
 
   const loadUserAndWallet = useCallback(async (authToken: string | null) => {
     if (!authToken) {
@@ -401,7 +487,7 @@ export default function App() {
     }
     try {
       const [meRes, walletRes] = await Promise.all([
-        apiRequest<{ user: UserProfile; wallet: WalletAccount }>('/api/auth/me', {
+        apiRequest<{ token?: string; user: UserProfile; wallet: WalletAccount }>('/api/auth/me', {
           token: authToken,
         }),
         apiRequest<{
@@ -413,6 +499,9 @@ export default function App() {
           paymentChannels: PaymentChannel[];
         }>('/api/wallet', { token: authToken }),
       ]);
+      if (meRes.token) {
+        setToken((prev) => (meRes.token && meRes.token !== prev ? meRes.token : prev));
+      }
       setUser((prev) => (sameJson(prev, meRes.user) ? prev : meRes.user));
       setWallet((prev) => (sameJson(prev, walletRes.wallet) ? prev : walletRes.wallet));
       setDeposits((prev) => (sameJson(prev, walletRes.deposits) ? prev : walletRes.deposits));
@@ -480,6 +569,7 @@ export default function App() {
 
   const handleLogout = async () => {
     apiRequest('/api/auth/logout', { method: 'POST', token }).catch(() => {});
+    signOutFirebaseAdmin().catch(() => {});
     setToken(null);
     setUser(null);
     setWallet(null);
@@ -515,12 +605,108 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleSelectTournament = (t: Tournament | null) => {
-    setSelectedTournament(t);
-    if (t && activeTab === 'home') {
-      setActiveTab('tournaments');
-    }
-  };
+  const handleSelectTournament = useCallback(
+    async (t: Tournament | null) => {
+      setTournamentDetailNotice('');
+      if (!t) {
+        selectedTournamentIdRef.current = null;
+        pendingUrlTourIdRef.current = null;
+        setSelectedTournament(null);
+        return;
+      }
+
+      selectedTournamentIdRef.current = t.id;
+      pendingUrlTourIdRef.current = null;
+      setSelectedTournament(t);
+      setActiveTab((prev) => (prev === 'tournaments' ? prev : 'tournaments'));
+
+      try {
+        const res = await apiRequest<{ tournament: Tournament }>(`/api/tournaments/${t.id}`, {
+          token,
+        });
+        if (res?.tournament && selectedTournamentIdRef.current === t.id) {
+          setSelectedTournament(res.tournament);
+          setApiTournaments((prev) => {
+            const exists = prev.some((item) => item.id === res.tournament.id);
+            return exists
+              ? prev.map((item) => (item.id === res.tournament.id ? res.tournament : item))
+              : [res.tournament, ...prev];
+          });
+        }
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          const fallback = await fetchTournamentByIdFromFirestore(t.id).catch(() => null);
+          if (fallback && selectedTournamentIdRef.current === t.id) {
+            setSelectedTournament(fallback);
+            return;
+          }
+          if (selectedTournamentIdRef.current === t.id) {
+            selectedTournamentIdRef.current = null;
+            setSelectedTournament(null);
+            setTournamentDetailNotice('This tournament could not be found or was removed.');
+          }
+        }
+      }
+    },
+    [token]
+  );
+
+  const tournamentsRef = useRef<Tournament[]>([]);
+  useEffect(() => {
+    tournamentsRef.current = tournaments;
+  }, [tournaments]);
+
+  const openTournamentById = useCallback(
+    async (requestedId: number) => {
+      setTournamentDetailNotice('');
+      try {
+        const res = await apiRequest<{ tournament: Tournament }>(`/api/tournaments/${requestedId}`, {
+          token,
+        });
+        if (!res?.tournament) return;
+        selectedTournamentIdRef.current = res.tournament.id;
+        setSelectedTournament(res.tournament);
+        setActiveTab('tournaments');
+        setApiTournaments((prev) => {
+          const exists = prev.some((item) => item.id === res.tournament.id);
+          return exists
+            ? prev.map((item) => (item.id === res.tournament.id ? res.tournament : item))
+            : [res.tournament, ...prev];
+        });
+      } catch {
+        const inMemory = tournamentsRef.current.find((item) => item.id === requestedId);
+        if (inMemory) {
+          selectedTournamentIdRef.current = inMemory.id;
+          setSelectedTournament(inMemory);
+          setActiveTab('tournaments');
+          return;
+        }
+        const fromCloud = await fetchTournamentByIdFromFirestore(requestedId).catch(() => null);
+        if (fromCloud) {
+          selectedTournamentIdRef.current = fromCloud.id;
+          setSelectedTournament(fromCloud);
+          setActiveTab('tournaments');
+        } else {
+          setActiveTab('tournaments');
+          setTournamentDetailNotice('Requested tournament could not be found or was removed.');
+        }
+      }
+    },
+    [token]
+  );
+
+  useEffect(() => {
+    popStateTriggerRef.current = openTournamentById;
+  }, [openTournamentById]);
+
+  // Resolve deep-linked tournament URLs (/tournaments/10 or ?tournament=10)
+  useEffect(() => {
+    if (!authChecked) return;
+    const requestedId = pendingUrlTourIdRef.current;
+    if (!requestedId) return;
+    pendingUrlTourIdRef.current = null;
+    void openTournamentById(requestedId);
+  }, [authChecked, openTournamentById]);
 
   const handleOpenMode = (mode: 'Battle Royale' | 'Clash Squad' | 'Lone Wolf') => {
     setSelectedMode(mode);
@@ -832,8 +1018,13 @@ export default function App() {
                 user={user}
                 selectedTournament={liveSelectedTournament}
                 selectedMode={selectedMode}
+                loading={loadingTournaments}
+                errorMessage={tournamentLoadError}
+                detailNotice={tournamentDetailNotice}
+                onRetry={() => loadTournamentsAndPublic(token)}
+                onClearDetailNotice={() => setTournamentDetailNotice('')}
                 onChangeMode={setSelectedMode}
-                onSelectTournament={setSelectedTournament}
+                onSelectTournament={handleSelectTournament}
                 onJoinTournament={handleJoinTournament}
                 onOpenAuth={() => setShowAuthModal(true)}
               />

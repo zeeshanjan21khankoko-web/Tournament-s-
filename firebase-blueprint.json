@@ -74,6 +74,9 @@
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "sqlite_id": {
+          "type": "integer"
+        },
         "email": {
           "type": "string",
           "minLength": 3,
@@ -90,9 +93,32 @@
           "maxLength": 32,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
+        "phone": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "avatar_url": {
+          "type": "string",
+          "maxLength": 512
+        },
         "role": {
           "type": "string",
           "enum": ["player", "admin"]
+        },
+        "is_blocked": {
+          "type": "integer"
+        },
+        "wallet_balance": {
+          "type": "integer"
+        },
+        "matches_played": {
+          "type": "integer"
+        },
+        "wins": {
+          "type": "integer"
+        },
+        "points": {
+          "type": "integer"
         },
         "created_at": {
           "type": "string",
@@ -348,6 +374,43 @@
         "updated_by_uid",
         "updated_at"
       ]
+    },
+    "AppUserPolicy": {
+      "title": "AppUserPolicy",
+      "description": "Permanent admin-only policy locking automatic user account deletion disabled and recording manually deleted user IDs.",
+      "type": "object",
+      "properties": {
+        "auto_deletion_disabled": {
+          "type": "boolean"
+        },
+        "manual_admin_only_deletion": {
+          "type": "boolean"
+        },
+        "preserve_registrations": {
+          "type": "boolean"
+        },
+        "deleted_user_ids": {
+          "type": "array"
+        },
+        "updated_by_uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "auto_deletion_disabled",
+        "manual_admin_only_deletion",
+        "preserve_registrations",
+        "deleted_user_ids",
+        "updated_by_uid",
+        "updated_at"
+      ]
     }
   },
   "firestore": {
@@ -381,7 +444,7 @@
     },
     "/app_settings/{settingId}": {
       "schema": { "$ref": "#/entities/AppTournamentPolicy" },
-      "description": "Permanent tournament policy disabling automatic creation and storing deleted tournament tombstones."
+      "description": "Permanent tournament and user-protection policy documents."
     }
   }
 }

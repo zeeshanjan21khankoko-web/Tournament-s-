@@ -229,6 +229,11 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                 src={currentSlide.imageUrl}
                 alt={currentSlide.title}
                 referrerPolicy="no-referrer"
+                onError={(e) => {
+                  if (!e.currentTarget.src.endsWith(KELLY_HERO_ARTWORK)) {
+                    e.currentTarget.src = KELLY_HERO_ARTWORK;
+                  }
+                }}
                 className="absolute inset-0 w-full h-full object-cover opacity-25 pointer-events-none"
               />
               <div className="absolute inset-0 bg-gradient-to-r from-[#0D1320]/95 via-[#0D1320]/80 to-[#0D1320]/50 pointer-events-none" />

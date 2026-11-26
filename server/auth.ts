@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { NextFunction, Request, Response } from 'express';
 import { db } from './db.ts';
 
@@ -181,7 +183,7 @@ export function signToken(userId: number, role: 'player' | 'admin'): string {
   const payload: TokenPayload = {
     uid: userId,
     role,
-    exp: Date.now() + 24 * 60 * 60 * 1000,
+    exp: Date.now() + 7 * 24 * 60 * 60 * 1000,
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const signature = crypto
@@ -259,6 +261,28 @@ function getSessionUserId(token: string): number | null {
   return payload ? payload.uid : null;
 }
 
+function resolveValidAuthSession(
+  req: Request
+): { uid: number; source: 'bearer' | 'cookie'; hasAnyToken: boolean } {
+  let hasAnyToken = false;
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const bearer = authHeader.slice(7).trim();
+    if (bearer) {
+      hasAnyToken = true;
+      const uid = getSessionUserId(bearer);
+      if (uid) return { uid, source: 'bearer', hasAnyToken: true };
+    }
+  }
+  const cookieToken = getCookieValue(req, SESSION_COOKIE_NAME);
+  if (cookieToken) {
+    hasAnyToken = true;
+    const uid = getSessionUserId(cookieToken);
+    if (uid) return { uid, source: 'cookie', hasAnyToken: true };
+  }
+  return { uid: 0, source: 'bearer', hasAnyToken };
+}
+
 function hasValidCookieCsrf(req: Request): boolean {
   const xrw = req.headers['x-requested-with'];
   if (typeof xrw === 'string' && xrw.toLowerCase() === 'xmlhttprequest') {
@@ -280,35 +304,32 @@ function hasValidCookieCsrf(req: Request): boolean {
 }
 
 export function extractBearerUser(req: Request): AuthUser | null {
-  const resolved = resolveAuthToken(req);
-  if (!resolved) return null;
-  const uid = getSessionUserId(resolved.token);
-  if (!uid) return null;
-  const user = getUserById(uid);
+  const session = resolveValidAuthSession(req);
+  if (!session.uid) return null;
+  const user = getUserById(session.uid);
   if (!user || user.is_blocked === 1) return null;
   return user;
 }
 
 export function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
-  const resolved = resolveAuthToken(req);
-  if (!resolved) {
+  const session = resolveValidAuthSession(req);
+  if (!session.hasAnyToken) {
     res.status(401).json({ error: 'Authentication required. Please sign in.' });
     return;
   }
+  if (!session.uid) {
+    res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
+    return;
+  }
   if (
-    resolved.source === 'cookie' &&
+    session.source === 'cookie' &&
     ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method.toUpperCase()) &&
     !hasValidCookieCsrf(req)
   ) {
     res.status(403).json({ error: 'Cross-origin request blocked.' });
     return;
   }
-  const uid = getSessionUserId(resolved.token);
-  if (!uid) {
-    res.status(401).json({ error: 'Session expired or invalid. Please sign in again.' });
-    return;
-  }
-  const user = getUserById(uid);
+  const user = getUserById(session.uid);
   if (!user) {
     res.status(401).json({ error: 'Account no longer exists.' });
     return;
@@ -336,4 +357,136 @@ export function requireAdmin(req: AuthenticatedRequest, res: Response, next: Nex
     return;
   }
   next();
+}
+
+export const BOOTSTRAPPED_ADMIN_EMAIL = 'zeeshanjan21khankoko@gmail.com';
+
+let cachedFirebaseProjectId: string | null = null;
+function getFirebaseProjectId(): string {
+  if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_PROJECT_ID.trim()) {
+    return process.env.FIREBASE_PROJECT_ID.trim();
+  }
+  if (cachedFirebaseProjectId) return cachedFirebaseProjectId;
+  try {
+    const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+    const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { projectId?: string };
+    if (raw?.projectId) {
+      cachedFirebaseProjectId = raw.projectId;
+      return cachedFirebaseProjectId;
+    }
+  } catch {
+    // Fallback below
+  }
+  cachedFirebaseProjectId = 'inspiring-primer-zct7q';
+  return cachedFirebaseProjectId;
+}
+
+let cachedCerts: Record<string, string> = {};
+let certsExpiresAt = 0;
+
+async function fetchGoogleSecureTokenCerts(forceRefresh = false): Promise<Record<string, string>> {
+  if (!forceRefresh && Object.keys(cachedCerts).length > 0 && Date.now() < certsExpiresAt) {
+    return cachedCerts;
+  }
+  const resp = await fetch(
+    'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'
+  );
+  if (!resp.ok) {
+    throw new Error(`Unable to fetch Google signing certificates (${resp.status}).`);
+  }
+  const certs = (await resp.json()) as Record<string, string>;
+  const cc = resp.headers.get('cache-control') || '';
+  const maxAgeMatch = cc.match(/max-age=(\d+)/i);
+  const maxAgeSec = maxAgeMatch ? Math.max(60, Number(maxAgeMatch[1])) : 3600;
+  cachedCerts = certs;
+  certsExpiresAt = Date.now() + maxAgeSec * 1000;
+  return certs;
+}
+
+export interface VerifiedFirebaseIdentity {
+  uid: string;
+  email: string;
+  name: string;
+  picture: string;
+}
+
+export async function verifyFirebaseGoogleIdToken(
+  idToken: string
+): Promise<VerifiedFirebaseIdentity> {
+  if (typeof idToken !== 'string' || !idToken.trim()) {
+    throw new Error('Missing Firebase ID token.');
+  }
+  const parts = idToken.trim().split('.');
+  if (parts.length !== 3) {
+    throw new Error('Malformed Firebase ID token.');
+  }
+  const [headerB64, payloadB64, sigB64] = parts;
+  let header: { alg?: string; kid?: string };
+  let payload: {
+    aud?: string;
+    iss?: string;
+    sub?: string;
+    email?: string;
+    email_verified?: boolean;
+    name?: string;
+    picture?: string;
+    exp?: number;
+    iat?: number;
+  };
+  try {
+    header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8'));
+    payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+  } catch {
+    throw new Error('Invalid Firebase ID token encoding.');
+  }
+
+  if (header.alg !== 'RS256' || !header.kid) {
+    throw new Error('Unsupported Firebase token algorithm.');
+  }
+
+  let certs = await fetchGoogleSecureTokenCerts(false);
+  let certPem = certs[header.kid];
+  if (!certPem) {
+    certs = await fetchGoogleSecureTokenCerts(true);
+    certPem = certs[header.kid];
+  }
+  if (!certPem) {
+    throw new Error('Unknown Firebase signing key.');
+  }
+
+  const verifier = crypto.createVerify('RSA-SHA256');
+  verifier.update(`${headerB64}.${payloadB64}`);
+  verifier.end();
+  const signatureOk = verifier.verify(certPem, Buffer.from(sigB64, 'base64url'));
+  if (!signatureOk) {
+    throw new Error('Invalid Firebase ID token signature.');
+  }
+
+  const projectId = getFirebaseProjectId();
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (payload.aud !== projectId) {
+    throw new Error('Firebase token audience mismatch.');
+  }
+  if (payload.iss !== `https://securetoken.google.com/${projectId}`) {
+    throw new Error('Firebase token issuer mismatch.');
+  }
+  if (typeof payload.exp !== 'number' || payload.exp <= nowSec) {
+    throw new Error('Firebase ID token has expired. Please sign in again.');
+  }
+  if (typeof payload.iat !== 'number' || payload.iat > nowSec + 300) {
+    throw new Error('Firebase ID token issued-at timestamp is invalid.');
+  }
+  if (!payload.sub || typeof payload.sub !== 'string' || payload.sub.length > 128) {
+    throw new Error('Firebase token subject is missing.');
+  }
+  if (!payload.email || payload.email_verified !== true) {
+    throw new Error('A verified Google email address is required.');
+  }
+
+  return {
+    uid: payload.sub,
+    email: payload.email.trim().toLowerCase(),
+    name: typeof payload.name === 'string' ? payload.name.trim() : '',
+    picture: typeof payload.picture === 'string' ? payload.picture.trim() : '',
+  };
 }

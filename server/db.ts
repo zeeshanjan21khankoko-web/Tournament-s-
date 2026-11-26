@@ -209,6 +209,18 @@ export function initDatabase(): void {
       deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS deleted_users_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      player_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      email TEXT NOT NULL,
+      deleted_by_admin_id INTEGER,
+      deleted_by_username TEXT NOT NULL DEFAULT '',
+      confirmation_note TEXT NOT NULL DEFAULT '',
+      deleted_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS lucky_draw_entries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -350,6 +362,18 @@ export function initDatabase(): void {
   ).run();
   db.prepare(
     "INSERT OR IGNORE INTO app_meta (key, value) VALUES ('manual_admin_only_tournaments', 'true')"
+  ).run();
+
+  // Automatic user account deletion is permanently disabled.
+  // User registrations and balances are preserved permanently unless manually deleted by Admin with confirmation.
+  db.prepare(
+    "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('auto_user_deletion_disabled', 'true')"
+  ).run();
+  db.prepare(
+    "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('manual_admin_only_user_deletion', 'true')"
+  ).run();
+  db.prepare(
+    "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('preserve_user_registrations', 'true')"
   ).run();
 
   recalculateAllUserPoints();
